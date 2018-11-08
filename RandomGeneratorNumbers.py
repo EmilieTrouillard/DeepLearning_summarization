@@ -7,17 +7,12 @@ Created on Tue Nov  6 22:36:12 2018
 """
 
 from numpy import random
-import pandas as pd
-
-file='words.txt'
-words=pd.read_csv(file, header=None)
-list_of_words = words[0].values
-nwords=len(list_of_words)
 
 # maximum lenght of one row
-def generate_seq(min_length, max_length):
+def generate_seq(min_length, max_length, list_of_words):
     length = random.randint(min_length, max_length)
     noNumber = True
+    nwords=len(list_of_words)
     while noNumber:
         row = []
         numbers = []

@@ -1,7 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
 import numpy as np
-from RandomGeneratorNumbers import generate_seq
 import mmh3
 
 target_to_text = {
@@ -16,6 +15,14 @@ target_to_text = {
     '8': 'eight',
     '9': 'nine',
 }
+list_of_words = ['hello', 'the', 'a', 'and', 'no', 'do', 'be', 'help', 'because',
+                 'is', 'monday', 'boy', 'girl', 'I', 'am', 'my', 'your', 'happy',
+                 'count', 'random', 'words', 'green', 'field', 'nature', 'free',
+                 'how', 'what', 'maybe', 'Danish', 'Copenhagen', 'maths', 'model',
+                 'work', 'study', 'animal', 'dog', 'cat', 'bird', 'name', 'city',
+                 'travel', 'country', 'fly', 'eat', 'sleep', 'think', 'find', 
+                 'music', 'art', 'method', 'beautiful', 'smart', 'nice', 'blue',
+                 'discover', 'write', 'read', 'are']
 
 EOS = '#'
 
@@ -31,6 +38,24 @@ def print_valid_characters():
     print("Number of valid characters:", len(valid_characters))
     print(l)
 
+def generate_seq(min_length, max_length, list_of_words):
+    length = np.random.randint(min_length, max_length)
+    noNumber = True
+    nwords=len(list_of_words)
+    while noNumber:
+        row = []
+        numbers = []
+        for k in range(length):
+            u = np.random.random()
+            if u > 0.8:
+                number = str(np.random.randint(5000))
+                row.append(number)
+                numbers.append(number)
+                noNumber = False
+            else:
+                word = list_of_words[np.random.randint(nwords)]
+                row.append(word)
+    return row, numbers
 
 ninput_chars = len(valid_characters)
 
@@ -60,7 +85,7 @@ def generate(batch_size=100, min_len=3, max_len=3, invalid_set=set()):
         """# choose random sequence length
         tar_len = np.random.randint(min_len, max_len + 1)"""
 
-        input_seq, target_seq = generate_seq(min_len, max_len + 1)
+        input_seq, target_seq = generate_seq(min_len, max_len + 1, list_of_words)
         text_target = target_seq
         text_target_in = [EOS] + text_target
         text_target_out = text_target + [EOS]
@@ -89,8 +114,8 @@ def generate(batch_size=100, min_len=3, max_len=3, invalid_set=set()):
                   " contain samples from 'invalid_set'.")
             _printed_warning = True
 
-        #if text_target_out in invalid_set:
-        #    continue
+        if str(text_target_out) in invalid_set:
+            continue
 
         text_inputs.append(text_input)
         int_inputs.append(int_input)
