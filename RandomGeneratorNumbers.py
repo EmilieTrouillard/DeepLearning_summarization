@@ -14,33 +14,21 @@ words=pd.read_csv(file, header=None)
 list_of_words = words[0].values
 nwords=len(list_of_words)
 
-output_file = open('text_with_numbers.txt', 'w') 
-target_file = open('target_numbers.txt', 'w') 
-# Numbers of rows to generate
-N = 1000
 # maximum lenght of one row
-max_length = 20
-
-for i in range(N):
-    length = random.randint(max_length) + 1
+def generate_seq(min_length, max_length):
+    length = random.randint(min_length, max_length)
     noNumber = True
     while noNumber:
-        row = ''
-        numbers = ''
+        row = []
+        numbers = []
         for k in range(length):
             u = random.random()
             if u > 0.8:
                 number = str(random.randint(5000))
-                row = row + number + ' '
-                numbers = numbers + number + ' '
+                row.append(number)
+                numbers.append(number)
                 noNumber = False
             else:
                 word = list_of_words[random.randint(nwords)]
-                row = row + word + ' '
-    numbers = numbers[:-1]
-    row = row[:-1]
-    output_file.write(row + '\n')
-    target_file.write(numbers + '\n')
-    
-output_file.close()
-target_file.close()
+                row.append(word)
+    return row, numbers
