@@ -1,7 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
 import numpy as np
-import mmh3
 
 target_to_text = {
     '0': 'zero',
@@ -27,9 +26,9 @@ list_of_words = ['hello', 'the', 'a', 'and', 'no', 'do', 'be', 'help', 'because'
 EOS = '#'
 
 input_characters = " ".join(target_to_text.values())
-valid_characters = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', EOS] + \
-                   list(set(input_characters))
-
+#valid_characters = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', EOS] + \
+                   #list(set(input_characters))
+valid_characters = list_of_words + [EOS] + [str(i) for i in range(5000)]
 
 def print_valid_characters():
     l = ''
@@ -86,9 +85,9 @@ def generate(batch_size=100, min_len=3, max_len=3, invalid_set=set()):
         tar_len = np.random.randint(min_len, max_len + 1)"""
 
         input_seq, target_seq = generate_seq(min_len, max_len + 1, list_of_words)
-        text_target = target_seq
-        text_target_in = [EOS] + text_target
-        text_target_out = text_target + [EOS]
+        text_target = " ".join(target_seq)
+        text_target_in = EOS + " " + text_target
+        text_target_out = text_target + " " + EOS
         """# list of text digits
         text_target = inp_str = "".join(map(str, np.random.randint(0, 10, tar_len)))
         text_target_in = EOS + text_target
@@ -96,25 +95,25 @@ def generate(batch_size=100, min_len=3, max_len=3, invalid_set=set()):
 
         # generate the targets as a list of integers
         # encoded
-        int_target_in = [mmh3.hash(str(i)) for i in text_target_in] #map(lambda c: valid_characters.index(c), text_target_in)
-        #int_target_in = [] #list(int_target_in)
-        int_target_out = [mmh3.hash(str(i)) for i in text_target_out] #map(lambda c: valid_characters.index(c), text_target_out)
-        #int_target_out = [] #list(int_target_out)
+        int_target_in = map(lambda c: valid_characters.index(c), text_target_in.split(" "))
+        int_target_in = list(int_target_in)
+        int_target_out = map(lambda c: valid_characters.index(c), text_target_out.split(" "))
+        int_target_out = list(int_target_out)
 
         # generate the text input
-        text_input = input_seq #" ".join(map(lambda k: target_to_text[k], inp_str))
+        text_input = " ".join(input_seq) #" ".join(map(lambda k: target_to_text[k], inp_str))
         
-        int_input = [mmh3.hash(str(i)) for i in input_seq]
-        """# generate the inputs as a list of integers
-        int_input = map(lambda c: valid_characters.index(c), text_input)
-        int_input = list(int_input)"""
+        #int_input = [mmh3.hash(str(i)) for i in input_seq]
+        # generate the inputs as a list of integers
+        int_input = map(lambda c: valid_characters.index(c), input_seq)
+        int_input = list(int_input)
 
         if not _printed_warning and iterations > 5 * batch_size:
             print("WARNING: doing a lot of iterations because I'm trying to generate a batch that does not"
                   " contain samples from 'invalid_set'.")
             _printed_warning = True
 
-        if str(text_target_out) in invalid_set:
+        if text_target_out in invalid_set:
             continue
 
         text_inputs.append(text_input)
@@ -186,7 +185,7 @@ def main():
         generate(batch_size=batch_size, max_len=4, min_len=2)
 
     print("input types:", inputs.dtype, inputs_seqlen.dtype, targets_in.dtype, targets_out.dtype, targets_seqlen.dtype)
-    print_valid_characters()
+    #print_valid_characters()
     print("Stop/start character = #")
 
     for i in range(batch_size):
