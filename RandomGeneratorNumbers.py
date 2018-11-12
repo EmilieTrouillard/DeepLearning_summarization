@@ -42,10 +42,10 @@ def generate_seq(min_length, max_length, list_of_words):
     return row, numbers
 
 def save_to_file(N, filename, seed):
-    # seed has to be 'train' or 'test'
+    # seed has to be 'train' or 'validation'
     if seed == 'train':
         random.seed(0)
-    else:
+    elif seed == 'validation':
         random.seed(1)
     outfile = open(filename, 'w')
     outfile.write('data,label\n')
@@ -57,4 +57,4 @@ def save_to_file(N, filename, seed):
     outfile.close()
     
 save_to_file(10000, 'SampleData/train.csv', 'train')
-save_to_file(2000, 'SampleData/test.csv', 'test')
+save_to_file(2000, 'SampleData/validation.csv', 'validation')
