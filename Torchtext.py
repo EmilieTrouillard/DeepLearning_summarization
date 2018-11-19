@@ -31,21 +31,33 @@ embed = torch.nn.Embedding(len(vocab), glove_dim)
 #w = embed.weight.data.copy_(vocab.vectors)
 
 
-def label_mask(x, y):
-    """x is the output tensor from the network
-       y is the label tensor
-       returns the mask to use for computing the loss"""
-    mask = torch.ones(len(y), max(np.shape(y)[1], np.shape(x)[1])) 
+def label_mask(y, y_hat):
+    """y_hat is the output tensor from the network
+       y is the label tensor (no embedding)
+       returns the mask to use for negating the padding"""
+    mask = torch.ones(len(y), max(np.shape(y)[1], np.shape(y_hat)[1])) 
     for i in range(len(y)):
-        x_index = len(x) - 1
+        y_hat_index = len(y_hat) - 1
         try:
             y_index = np.where(y[i]==1)[0][0]
-            index = max(x_index, y_index)
+            index = max(y_hat_index, y_index)
             mask[i,index:] = 0
         except:
             pass
     return mask
-    
+
+def attention_mask(x):
+    """x is the training data tensor (no embedding)
+       returns the mask to use for negating the padding effect on the attention"""
+    mask = torch.zeros(len(x), len(x[0]))
+    for i in range(len(x)):
+        try:
+            index = np.where(x[i]==1)[0][0]
+            mask[i][index:] = -np.inf
+        except:
+            pass
+    return mask
+
 
 #TODO: Why are the training examples in the columns?
 #TODO: How do we enable sort?
