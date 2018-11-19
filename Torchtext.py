@@ -48,7 +48,8 @@ def label_mask(y, y_hat):
 
 def attention_mask(x):
     """x is the training data tensor (no embedding)
-       returns the mask to use for negating the padding effect on the attention"""
+       returns the mask to use for negating the padding effect on the attention
+       add this mask before taking the softmax!"""
     mask = torch.zeros(len(x), len(x[0]))
     for i in range(len(x)):
         try:
