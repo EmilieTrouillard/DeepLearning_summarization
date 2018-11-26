@@ -17,10 +17,10 @@ glove_dim = 50
 
 
 
-TEXT = data.Field(sequential=True)
-LABEL = data.Field(sequential=True)
+TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
+LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
-TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
+TEXT.build_vocab(train_set, max_size=vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.build_vocab(train_set)
 
 #Make glove embedding
@@ -60,7 +60,6 @@ def attention_mask(x):
     return mask
 
 
-#TODO: Why are the training examples in the columns?
 #TODO: How do we enable sort?
 
 dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=0,
