@@ -11,13 +11,6 @@ import torch.optim as optim
 import numpy as np
 import numpy.random as rand
 
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Nov 12 15:27:39 2018
-
-@author: jacob
-"""
-
 from torchtext import data
 import torch
 
@@ -57,6 +50,7 @@ for epoch in range(epochs):
         #x=torch.t(x)   
         x1 = examples.data
         y = examples.label
+        #yembed=embed(y)
         x = embed(x)        
         print(x)
         print(y)
@@ -75,8 +69,9 @@ seqlen=x.size(0)
 embedsize=x.size(-1)
 batch_size=x.size(1)
 layers=2
-blocks=40
-blocks=seqlen
+blocks=30
+maxlen=1#summary max length
+
 #%%
 
 class BiEncoderRNN(nn.Module):
@@ -99,34 +94,99 @@ class BiEncoderRNN(nn.Module):
 
 
 class BiDecoderRNN(nn.Module):
-    def __init__(self, OutDimEnc, hidden_size, output_size):
+    def __init__(self, OutHidEnc, hidden_size, output_size):
         super(BiDecoderRNN, self).__init__()
         self.hidden_size = hidden_size
-        self.lstm = nn.LSTM(input_size =OutDimEnc, hidden_size=self.hidden_size,
+        self.lstm = nn.LSTM(input_size =OutHidEnc, hidden_size=self.hidden_size,
                           bidirectional=True,num_layers=dlayers)
-       # self.softmax = nn.LogSoftmax(dim=1)
-
-    def forward(self, x, hidden):
-        output, hidden = self.lstm(x, hidden)
-        #output = self.softmax(output[0])
+        
+        self.out = nn.Linear(2*hidden_size, output_size)
+        
+        self.softmax = nn.LogSoftmax(dim=1)
+    def forward(self, x, hidden,maxlen):
+        oui=[]
+        for k in range(maxlen):
+            output, hidden = self.lstm(x, hidden)
+            output= self.out(output[-1])
+            output = self.softmax(output)
+            oui.append(output)# [maxlen,batchsize]/[Word Position, batch position]
+        output=  torch.stack(oui)
         return output, hidden
 
     def initHidden(self):
         return (torch.zeros(2*dlayers,batch_size,self.hidden_size 
                , device=device),torch.zeros(2*dlayers,batch_size,self.hidden_size, device=device))
-
+        
+        
 #%%        
 enc=BiEncoderRNN(embedsize,blocks)
 enc_h=BiEncoderRNN.initHidden(enc)
 inp,hid=enc.forward(x,enc_h)
+#fhid=hid[0][2,:,:]
+#bhid=hid[0][3,:,:]
+#decinp=torch.cat((fhid,bhid),dim=1)
 
 #%% 
 dlayers=layers
-dblocks=10
+dblocks=blocks
 decout=vocab_size
-decin=blocks
-
-
-dec=BiDecoderRNN(2*blocks ,dblocks,decout)
+#decin=
+dec=BiDecoderRNN(embedsize ,dblocks,decout)
 dec_h=BiEncoderRNN.initHidden(dec)
+outp,dechid=dec.forward(x,hid,1)
+#%%
+
+enc=BiEncoderRNN(embedsize,blocks)
+criterion=nn.CrossEntropyLoss()
+def forward_pass(encoder, decoder, x, t, t_in, max_t_len):
+    """
+    Executes a forward pass through the whole model.
+    :param encoder:
+    :param decoder:
+    :param x: input to the encoder, shape [batch, seq_in_len]
+    :param t: target output predictions for decoder, shape [batch, seq_t_len]
+    :param criterion: loss function
+    :param max_t_len: maximum target length
+
+    :return: output (after log-softmax), loss, accuracy (per-symbol)
+    """
+    # Run encoder and get last hidden state (and output) 
+    enc_h=BiEncoderRNN.initHidden(enc)
+    enc_out,enc_h=enc.forward(x,enc_h)
+    
+
+    enc_h=BiEncoderRNN.initHidden(enc)
+    inp,hid=enc.forward(x,enc_h)
+
+    dec_h = hid # Init hidden state of decoder as hidden state of encoder
+    dec_input = t_in #Input to decoder; teacher forcing implement later.
+    
+    output ,h= decoder(dec_input, dec_h, max_t_len)
+    # Shape: [seqlen, batch,num_classes] with last dim containing log probabilities
+
+    loss = criterion(output[0], t)
+    output=torch.argmax(output, dim=-1)
+    #accuracy = (output == t).type(torch.FloatTensor).mean()
+    return output
+#%%
+i=forward_pass(enc,dec,x=x,t=y,t_in=x
+            ,max_t_len=maxlen)
+
+#%%
+def train(encoder, decoder, inputs, targets, targets_in, criterion, enc_optimizer, dec_optimizer, epoch, max_t_len):
+    encoder.train()
+    decoder.train()
+    for batch_idx, (x, t, t_in) in enumerate(zip(inputs, targets, targets_in)):
+        
+        
+        # INSERT YOUR CODE HERE
+        
+        
+        if batch_idx % 200 == 0:
+            print('Epoch {} [{}/{} ({:.0f}%)]\tTraining loss: {:.4f} \tTraining accuracy: {:.1f}%'.format(
+                epoch, batch_idx * len(x), TRAINING_SIZE,
+                100. * batch_idx * len(x) / TRAINING_SIZE, loss.item(),
+                100. * accuracy.item())
+
+
 
