@@ -12,7 +12,7 @@ import numpy as np
 vocab_size = 800
 batch_size = 20
 epochs = 1
-path = 'SampleData/train.csv'
+path = '../SampleData/train.csv'
 glove_dim = 50
 
 
@@ -35,16 +35,16 @@ def label_mask(y, y_hat):
     """y_hat is the output tensor from the network
        y is the label tensor (no embedding)
        returns the mask to use for negating the padding"""
-    mask = torch.ones(len(y), max(np.shape(y)[1], np.shape(y_hat)[1])) 
-    for i in range(len(y)):
-        y_hat_index = len(y_hat) - 1
+    mask = torch.ones(len(y), np.shape(y)[1]) 
+    for i in range(len(y[0])):
         try:
-            y_index = np.where(y[i]==1)[0][0]
+            y_hat_index =  np.where(y_hat[:,i]==1)[0][0]
+            y_index = np.where(y[:,i]==1)[0][0]
             index = max(y_hat_index, y_index)
-            mask[i,index:] = 0
+            mask[index:, i] = 0
         except:
             pass
-    return mask
+    return mask.float()
 
 def attention_mask(x):
     """x is the training data tensor (no embedding)
@@ -97,10 +97,10 @@ blocks=30
 maxlen=966#summary max length
 
 def onehot(label, vocab,batch):
-    onehot=torch.zeros(vocab,batch)
+    onehot=torch.zeros(batch, vocab)
     for k in range(batch):
-        onehot[label[k],k]=1
-    return onehot
+        onehot[k,label[k]]=1
+    return onehot.long()
     
     
 #%%
@@ -134,7 +134,7 @@ class BiDecoderRNN(nn.Module):
         self.out = nn.Linear(2*hidden_size, output_size)
         
         self.softmax = nn.LogSoftmax(dim=-1)
-        self.loss= nn.CrossEntropyLoss()
+        self.loss= nn.CrossEntropyLoss(reduction='none')
     def forward(self, x, hidden,label):
         oui=[]
         losslist=[]
@@ -144,16 +144,16 @@ class BiDecoderRNN(nn.Module):
         maxlab=len(label)
         while EOS==False and k<maxlab:
             output, hidden = self.lstm(x, hidden)
-            output= self.out(output[-1])
+            output= self.out(output[-2])
             output = self.softmax(output)
-            loss=nn.CrossEntropyLoss(output,onehot(label[k],vocab_size,batch_size))
+            loss=self.loss(output,label[k])
             output=torch.argmax(output,-1)
             losslist.append(loss)
             oui.append(output)# [maxlen,batchsize]/[Word Position, batch position]
             output=label[k]
             k=k+1
         output=oui
-        return output, losslist,hidden
+        return torch.stack(output), torch.stack(losslist),hidden
 
     def initHidden(self):
         return (torch.zeros(2*dlayers,batch_size,self.hidden_size 
@@ -179,7 +179,7 @@ outp,loss,dechid=dec.forward(hid[0],dec_h,y)
 #%%
 
 enc=BiEncoderRNN(embedsize,blocks)
-criterion=nn.CrossEntropyLoss()
+#criterion=nn.CrossEntropyLoss()
 def forward_pass(encoder, decoder, x, label):
     """
     Executes a forward pass through the whole model.
@@ -201,17 +201,20 @@ def forward_pass(encoder, decoder, x, label):
     inp,hid=enc.forward(x,enc_h)
 
     dec_h=BiEncoderRNN.initHidden(dec) # Init hidden state of decoder as hidden state of encoder
-    dec_input = hid #Input to decoder; teacher forcing implement later.
+    dec_input = hid[0] #Input to decoder; teacher forcing implement later.
     
     output,lossdec ,h= decoder(dec_input, dec_h,label)
-    # Shape: [seqlen, batch,num_classes] with last dim containing log probabilities
 
-    loss = criterion(output, t)
-    output=torch.argmax(output, dim=-1)
+    # Shape: [seqlen, batch,num_classes] with last dim containing log probabilities
+    mask = label_mask(label, output)
+    loss_mask = torch.sum(lossdec * mask, dim=0) 
+    mean_loss = loss_mask / torch.sum(mask, dim=0)
+#    loss = criterion(output, label)
+#    output=torch.argmax(output, dim=-1)
     #accuracy = (output == t).type(torch.FloatTensor).mean()
-    return output
+    return output, mean_loss
 #%%
-i=forward_pass(enc,dec,x=x,label=y)
+out, loss =forward_pass(enc,dec,x=x,label=y)
 
 #%%
 def train(encoder, decoder, inputs, targets, targets_in, criterion, enc_optimizer, dec_optimizer, epoch, max_t_len):
@@ -227,7 +230,7 @@ def train(encoder, decoder, inputs, targets, targets_in, criterion, enc_optimize
             print('Epoch {} [{}/{} ({:.0f}%)]\tTraining loss: {:.4f} \tTraining accuracy: {:.1f}%'.format(
                 epoch, batch_idx * len(x), TRAINING_SIZE,
                 100. * batch_idx * len(x) / TRAINING_SIZE, loss.item(),
-                100. * accuracy.item())
+                100. * accuracy.item()))
 
 
 
