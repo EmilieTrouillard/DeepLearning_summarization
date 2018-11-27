@@ -9,11 +9,13 @@ from torchtext import data
 import torch
 import numpy as np
 from torch import nn
+import torch.optim as optim
 
 vocab_size = 80
 batch_size = 20
 epochs = 10
-path = '/home/jacob/Downloads/DeepLearning_summarization-master (2)/SampleData/train.csv'
+#path = '/home/jacob/Downloads/DeepLearning_summarization-master (2)/SampleData/train.csv'
+path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train.csv'
 glove_dim = 50
 device='cpu'
 layers_enc=2 #Num of layers in the encoder
@@ -38,8 +40,8 @@ decout=vocab_size
 Data loader part
 """
 
-TEXT = data.Field(sequential=True)
-LABEL = data.Field(sequential=True)
+TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
+LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.build_vocab(train_set)
@@ -62,16 +64,18 @@ def label_mask(y, y_hat):
     """y_hat is the output tensor from the network
        y is the label tensor (no embedding)
        returns the mask to use for negating the padding"""
-    mask = torch.ones(len(y), max(np.shape(y)[1])) 
-    for i in range(len(y)):
-        y_hat_index = len(y_hat) - 1
+    batch_size = np.shape(y)[1]
+    max_len = max(len(y), len(y_hat))
+    mask = torch.ones(max_len, batch_size) 
+    for i in range(batch_size):
         try:
-            y_index = np.where(y[i]==1)[0][0]
+            y_hat_index =  np.where(y_hat[:,i]==1)[0][0]
+            y_index = np.where(y[:,i]==1)[0][0]
             index = max(y_hat_index, y_index)
-            mask[i,index:] = 0
+            mask[index:, i] = 0
         except:
             pass
-    return mask
+    return mask.float()
 
 def attention_mask(x):
     """x is the training data tensor (no embedding)
@@ -86,6 +90,9 @@ def attention_mask(x):
             pass
     return mask
 
+
+def display(x):
+    return ' '.join([TEXT.vocab.itos[i] for i in x[:,0] if TEXT.vocab.itos[i] != '<pad>'])
      
 #%%
 """
@@ -123,6 +130,8 @@ class BiDecoderRNN(nn.Module):
                             bidirectional=False, num_layers=layers_dec)
         
         self.reduce_dim = nn.Linear(2*hidden_size, hidden_size, bias=True)
+        self.linearOut = nn.Linear(hidden_size, vocab_size) #TODO: bias?
+
 
     def forward(self, attention, input_dec, hidden_enc, cell_state_enc):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
@@ -135,9 +144,11 @@ class BiDecoderRNN(nn.Module):
         new_cell = self.reduce_dim(old_cell)
 
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
+        output_dec = self.linearOut(output_dec)
         return output_dec, (hidden_dec, cell_state_dec)
 
-def forward_pass(encoder, decoder, x, label):
+ #reduction='none' because we want one loss per element and then apply the mask
+def forward_pass(encoder, decoder, x, label, criterion):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -160,11 +171,17 @@ def forward_pass(encoder, decoder, x, label):
     attention = 0 #TODO: Implement attention
     
     output, (hidden_dec, cell_state_dec) = decoder.forward(attention, label, hidden_enc, cell_state_enc)
+    
+    out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
 
-#    loss = criterion(output, t)
-#    output=torch.argmax(output, dim=-1)
+    label_hat = torch.argmax(output, -1)
+    loss = criterion(out, torch.squeeze(label).long())
+    mask = label_mask(label, label_hat)
+    loss_mask = torch.sum(loss * mask, dim=0) 
+    loss_batch = loss_mask / torch.sum(mask, dim=0)
+    mean_loss = torch.mean(loss_batch)
     #accuracy = (output == t).type(torch.FloatTensor).mean()
-    return output
+    return output, mean_loss, label_hat
 
         
 #%%
@@ -172,17 +189,17 @@ def forward_pass(encoder, decoder, x, label):
     
 #for epoch in range(epochs):
 for examples in dataset_iter:
-    x = examples.data
+    x1 = examples.data
     y = examples.label
     y = torch.reshape(y,(np.shape(y)[0],np.shape(y)[1],1))
     y = y.float()
-    x = embed(x)        
+    x = embed(x1)        
     break
     
 encoder = BiEncoderRNN(glove_dim, 10)
-decoeder = BiDecoderRNN(1, 10)
+decoder = BiDecoderRNN(1, 10)
 
-forward_pass(encoder, decoeder, x, y)
+#out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
 #%%        
 #encoder = BiEncoderRNN(glove_dim, h_size_enc)
 #enc_h = BiEncoderRNN.initHidden(encoder)
@@ -203,20 +220,40 @@ forward_pass(encoder, decoeder, x, y)
 #i=forward_pass(enc,dec,x=x,label=y)
 
 #%%
-def train(encoder, decoder, inputs, targets, targets_in, criterion, enc_optimizer, dec_optimizer, epoch, max_t_len):
-    
+def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch):
     encoder.train()
     decoder.train()
-    for batch_idx, (x, t, t_in) in enumerate(zip(inputs, targets, targets_in)):
+    i = 0
+    for batchData in data:
+        i += 1
+        x1 = batchData.data
+        y = batchData.label
+        y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
+        y = y.float()
+        x = embed(x1)
+        out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
         
-
+        enc_optimizer.zero_grad()
+        dec_optimizer.zero_grad()
+        loss.backward()
+        enc_optimizer.step()
+        dec_optimizer.step()
         
-        
-        if batch_idx % 200 == 0:
-            print('Epoch {} [{}/{} ({:.0f}%)]\tTraining loss: {:.4f} \tTraining accuracy: {:.1f}%'.format(
-            epoch, batch_idx * len(x), TRAINING_SIZE, 
-            100. * batch_idx * len(x) / TRAINING_SIZE, loss.item(), 100. * accuracy.item()))
+        if i % 5 == 0:
+            print('Epoch {} [Batch {}]\tTraining loss: {:.4f}'.format(
+                epoch, i, loss.item()))
+            print('input')
+            print(display(x1))
+            print('output')
+            print(display(label_hat))
 
 #%% Training op
+LEARNING_RATE = 0.003
+enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
+dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
+criterion = nn.CrossEntropyLoss(reduction='none')
 
-#enc = BiEncoderRNN(glove_dim, )
+#%%
+EPOCHS = 3
+for epoch in range(1, EPOCHS + 1):
+    train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
