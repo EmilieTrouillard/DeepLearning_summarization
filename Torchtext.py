@@ -35,13 +35,13 @@ def label_mask(y, y_hat):
     """y_hat is the output tensor from the network
        y is the label tensor (no embedding)
        returns the mask to use for negating the padding"""
-    mask = torch.ones(len(y), max(np.shape(y)[1], np.shape(y_hat)[1])) 
-    for i in range(len(y)):
-        y_hat_index = len(y_hat) - 1
+    mask = torch.ones(len(y), np.shape(y)[1]) 
+    for i in range(len(y[0])):
         try:
-            y_index = np.where(y[i]==1)[0][0]
+            y_hat_index =  np.where(y_hat[:,i]==1)[0][0]
+            y_index = np.where(y[:,i]==1)[0][0]
             index = max(y_hat_index, y_index)
-            mask[i,index:] = 0
+            mask[index:, i] = 0
         except:
             pass
     return mask
