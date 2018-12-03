@@ -11,13 +11,17 @@ import numpy as np
 from torch import nn
 import torch.optim as optim
 
+MAX_LENGTH=966#summary max length
 vocab_size = 80
 batch_size = 20
 epochs = 10
+attention_size = 2
 #path = '/home/jacob/Downloads/DeepLearning_summarization-master (2)/SampleData/train.csv'
-path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train.csv'
+path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
+path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
 glove_dim = 50
-device='cpu'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
 
@@ -29,7 +33,6 @@ h_size_dec = vocab_size #Hidden size of decoder
 
 
 
-maxlen=966#summary max length
 decout=vocab_size
 
 #TODO: How do we enable sort in dataloader?
@@ -43,6 +46,8 @@ Data loader part
 TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
+validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
+
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.build_vocab(train_set)
 vocab = TEXT.vocab
@@ -56,7 +61,7 @@ embed = torch.nn.Embedding(len(vocab), glove_dim)
 dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=0,
         train=True, shuffle=True, repeat=False, sort=False)
 
-dataset_iter_test = data.Iterator(train_set, batch_size=1, device=0,
+dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=0,
         train=True, shuffle=True, repeat=False, sort=False)
 
 """
@@ -69,7 +74,7 @@ def label_mask(y, y_hat):
        returns the mask to use for negating the padding"""
     batch_size = np.shape(y)[1]
     max_len = max(len(y), len(y_hat))
-    mask = torch.ones(max_len, batch_size) 
+    mask = torch.ones(max_len, batch_size, device=device) 
     for i in range(batch_size):
         try:
             y_hat_index =  np.where(y_hat[:,i]==1)[0][0]
@@ -84,7 +89,7 @@ def attention_mask(x):
     """x is the training data tensor (no embedding)
        returns the mask to use for negating the padding effect on the attention
        add this mask before taking the softmax!"""
-    mask = torch.zeros(len(x), len(x[0]))
+    mask = torch.zeros(len(x), len(x[0]), device=device)
     for i in range(len(x)):
         try:
             index = np.where(x[i]==1)[0][0]
@@ -138,9 +143,14 @@ class BiDecoderRNN(nn.Module):
         
         self.reduce_dim = nn.Linear(2*hidden_size, hidden_size, bias=True)
         self.linearOut = nn.Linear(hidden_size, vocab_size) #TODO: bias?
+        self.attention = nn.Linear(2*self.hidden_size + self.hidden_size, attention_size, bias=True)
+        self.tanh = nn.Tanh()
+        self.attn_out = nn.Linear(attention_size, 1, bias=False)
+        self.softmax = nn.Softmax(dim=0)
+        self.linearVocab1 = nn.Linear(1,1, bias=True) #TODO; fix dimension size
+        self.linearVocab2 = nn.Linear(1, vocab_size, bias=True) #TODO; fix dimension size
 
-
-    def forward(self, attention, input_dec, hidden_enc, cell_state_enc):
+    def forward(self, output_enc, input_dec, hidden_enc, cell_state_enc):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
 
         #We reduce the forwards and backwards direction hidden states into
@@ -149,10 +159,19 @@ class BiDecoderRNN(nn.Module):
         old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
         new_enc = self.reduce_dim(old_enc)
         new_cell = self.reduce_dim(old_cell)
-
+        
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
-        output_dec = self.linearOut(output_dec)
-        return output_dec, (hidden_dec, cell_state_dec)
+        
+        #Attention
+        for t in range(len(output_dec)):
+            input_attention = torch.cat((output_enc, output_dec[t:t+1].expand(len(output_enc), batch_size, self.hidden_size)), dim=2)
+            e = self.attention(input_attention)
+            e = self.tanh(e)
+            e = self.attn_out(e)
+            attention = self.softmax(e)
+            context = torch.sum(attention * output_enc, dim=0).reshape((1,batch_size, 2* self.hidden_size))
+            p_vocab = self.linearOut(output_dec)
+        return p_vocab, (hidden_dec, cell_state_dec)
 
  #reduction='none' because we want one loss per element and then apply the mask
 def forward_pass(encoder, decoder, x, label, criterion):
@@ -175,9 +194,7 @@ def forward_pass(encoder, decoder, x, label, criterion):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     
-    attention = 0 #TODO: Implement attention
-    
-    output, (hidden_dec, cell_state_dec) = decoder.forward(attention, label[:-1], hidden_enc, cell_state_enc)
+    output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label[:-1], hidden_enc, cell_state_enc)
     
     out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
 
@@ -192,7 +209,7 @@ def forward_pass(encoder, decoder, x, label, criterion):
 
         
 #%%
-def forward_pass_test(encoder, decoder, x):
+def forward_pass_val(encoder, decoder, x):
     #Reinitialize the state to zero since we have a new sample now.
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=False)
     
@@ -200,7 +217,7 @@ def forward_pass_test(encoder, decoder, x):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     EOS = False
-    label_hat = torch.Tensor(1,1,1)
+    label_hat = torch.Tensor(1,1,1, device=device)
     label_hat[:] = 2
     out = []
     while not EOS and len(out) < len(x):
@@ -222,14 +239,14 @@ for examples in dataset_iter:
     x1 = examples.data
     y = examples.label
     y = torch.reshape(y,(np.shape(y)[0],np.shape(y)[1],1))
-    y = y.float()
-    x = embed(x1)        
+    y = y.float().cuda()
+    x = embed(x1).cuda()        
     break
     
-encoder = BiEncoderRNN(glove_dim, 100)
-decoder = BiDecoderRNN(1, 100)
+encoder = BiEncoderRNN(glove_dim, 100).to(device)
+decoder = BiDecoderRNN(1, 100).to(device)
 
-#out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
+out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
 #%%        
 #encoder = BiEncoderRNN(glove_dim, h_size_enc)
 #enc_h = BiEncoderRNN.initHidden(encoder)
@@ -259,8 +276,8 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         x1 = batchData.data
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
-        y = y.float()
-        x = embed(x1)
+        y = y.float().cuda()
+        x = embed(x1).cuda()
         out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
         
         enc_optimizer.zero_grad()
@@ -268,36 +285,36 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
-        if i % 5 == 0:
+        if i % 100 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f}'.format(
                 epoch, i, loss.item()))
-        if i % 50 == 0:
+        if i % 500 == 0:
             print('input')
             print(display(x1))
             print('output')
             print(display(label_hat))
 
-def test(encoder, decoder, data):
+def validation(encoder, decoder, data):
     for batchData in data:
         x1 = batchData.data
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
-        y = y.float()
-        x = embed(x1)
-        test_output = forward_pass_test(encoder, decoder, x)
+        y = y.float().cuda()
+        x = embed(x1).cuda()
+        test_output = forward_pass_val(encoder, decoder, x)
         break
     print('TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST')
     print(display(x1))
     print(display(test_output))
 
 #%% Training op
-LEARNING_RATE = 0.003
+LEARNING_RATE = 0.001
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
 dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none')
 
 #%%
-EPOCHS = 3
+EPOCHS = 30
 for epoch in range(1, EPOCHS + 1):
     train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-    test(encoder, decoder, dataset_iter_test)
+#    validation(encoder, decoder, dataset_iter_val)

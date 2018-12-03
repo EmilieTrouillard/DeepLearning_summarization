@@ -50,11 +50,11 @@ def save_to_file(N, filename, seed):
     outfile = open(filename, 'w')
     outfile.write('data,label\n')
     for i in range(N):
-        input_text, target = generate_seq(100, 1000, weighted_list_of_words)
+        input_text, target = generate_seq(10, 20, weighted_list_of_words)
         input_text = " ".join(input_text)
         target = " ".join(target)
         outfile.write(input_text + ',' + target + '\n')
     outfile.close()
     
-save_to_file(10000, 'SampleData/train.csv', 'train')
-save_to_file(2000, 'SampleData/validation.csv', 'validation')
+save_to_file(10000, 'SampleData/train_short.csv', 'train')
+save_to_file(2000, 'SampleData/validation_short.csv', 'validation')
