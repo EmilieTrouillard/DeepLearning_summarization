@@ -163,12 +163,17 @@ class BiDecoderRNN(nn.Module):
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         
         #Attention
+        #We loop over t in the equation
         for t in range(len(output_dec)):
+            #Expand negates a loop over i
             input_attention = torch.cat((output_enc, output_dec[t:t+1].expand(len(output_enc), batch_size, self.hidden_size)), dim=2)
             e = self.attention(input_attention)
             e = self.tanh(e)
             e = self.attn_out(e)
             attention = self.softmax(e)
+            #Calculate context vector sum(a_i^t * h_i)
+            #This becomes a weighted sum of hidden states, hidden states created
+            #after inputing a word with high attention has more weight
             context = torch.sum(attention * output_enc, dim=0).reshape((1,batch_size, 2* self.hidden_size))
             p_vocab = self.linearOut(output_dec)
         return p_vocab, (hidden_dec, cell_state_dec)
