@@ -24,16 +24,22 @@ layers_dec=2 #Num of layers in the decoder
 
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
+save_model = True
+load_model = True
+
 
 if socket.gethostname() == 'jacob':
     path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_long.csv'
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
+    PATH = ''
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
+    PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 #TODO: How do we enable sort in dataloader?
 
@@ -89,7 +95,7 @@ def attention_mask(x):
     """x is the training data tensor (no embedding)
        returns the mask to use for negating the padding effect on the attention
        add this mask before taking the softmax!"""
-    mask = torch.zeros(len(x), len(x[0]), device=device)
+    mask = torch.zeros(len(x), len(x[0]), 1, device=device)
     for i in range(len(x)):
         try:
             index = np.where(x[i]==1)[0][0]
@@ -150,7 +156,7 @@ class BiDecoderRNN(nn.Module):
         self.linearVocab1 = nn.Linear(2*hidden_size+hidden_size,vocab_features, bias=True) 
         self.linearVocab2 = nn.Linear(vocab_features, vocab_size, bias=True) 
 
-    def forward(self, output_enc, input_dec, hidden_enc, cell_state_enc, first_word=True):
+    def forward(self, output_enc, input_dec, hidden_enc, cell_state_enc, att_mask, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
 
         #We reduce the forwards and backwards direction hidden states into
@@ -176,6 +182,7 @@ class BiDecoderRNN(nn.Module):
             e = self.attention(input_attention)
             e = self.tanh(e)
             e = self.attn_out(e)
+            e += att_mask
             attention = self.softmax(e)
             
             #Calculate context vector sum(a_i^t * h_i)
@@ -191,7 +198,7 @@ class BiDecoderRNN(nn.Module):
         return pvocab, (hidden_dec, cell_state_dec)
 
  #reduction='none' because we want one loss per element and then apply the mask
-def forward_pass(encoder, decoder, x, label, criterion):
+def forward_pass(encoder, decoder, x, label, criterion, att_mask):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -211,7 +218,7 @@ def forward_pass(encoder, decoder, x, label, criterion):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     
-    output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label[:-1], hidden_enc, cell_state_enc)
+    output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label[:-1], hidden_enc, cell_state_enc, att_mask)
         
     
     out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
@@ -222,11 +229,10 @@ def forward_pass(encoder, decoder, x, label, criterion):
     loss_mask = torch.sum(loss * mask, dim=0) 
     loss_batch = loss_mask / torch.sum(mask, dim=0)
     mean_loss = torch.mean(loss_batch)
-    #accuracy = (output == t).type(torch.FloatTensor).mean()
     return output, mean_loss, label_hat
 
         
-def forward_pass_val(encoder, decoder, x):
+def forward_pass_val(encoder, decoder, x, att_mask):
     #Reinitialize the state to zero since we have a new sample now.
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=False)
     
@@ -237,16 +243,15 @@ def forward_pass_val(encoder, decoder, x):
     label_hat = torch.Tensor(1,1,1).cuda()
     label_hat[:] = 2
     out = []
-    output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label_hat, hidden_enc, cell_state_enc, first_word=True)
+    output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label_hat, hidden_enc, cell_state_enc, att_mask, first_word=True)
     index = torch.argmax(output, -1)
     label_hat[:] = index
     if label_hat == 3:
         EOS = True
     out.append(index)
     while not EOS and len(out) < len(x):
-        output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label_hat, hidden_dec, cell_state_dec, first_word=False)
+        output, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label_hat, hidden_dec, cell_state_dec, att_mask, first_word=False)
 
-        #out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
         index = torch.argmax(output, -1)
         label_hat[:] = index
         if label_hat == 3:
@@ -254,40 +259,6 @@ def forward_pass_val(encoder, decoder, x):
         out.append(index)
     return torch.stack(out)
 
-#%%
-#Put real training loop here instead
-    
-#for epoch in range(epochs):
-for examples in dataset_iter:
-    x1 = examples.data
-    y = examples.label
-    y = torch.reshape(y,(np.shape(y)[0],np.shape(y)[1],1))
-    y = y.float().cuda()
-    x = embed(x1).cuda()        
-    break
-    
-encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
-decoder = BiDecoderRNN(1, hidden_size).to(device)
-
-out, loss, label_hat = forward_pass(encoder, decoder, x, y, nn.CrossEntropyLoss())
-#%%        
-#encoder = BiEncoderRNN(glove_dim, h_size_enc)
-#enc_h = BiEncoderRNN.initHidden(encoder)
-#
-#inp,hid=encoder.forward(x,enc_h)
-#
-##%% 
-#
-#dec=BiDecoderRNN(blocks ,dblocks,decout)
-#dec_h=BiEncoderRNN.initHidden(dec)
-#outp,loss,dechid=dec.forward(hid[0],dec_h,y)
-##%%
-#
-#enc=BiEncoderRNN(embedsize,blocks)
-#criterion=nn.CrossEntropyLoss()
-
-#%%
-#i=forward_pass(enc,dec,x=x,label=y)
 
 #%%
 def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch):
@@ -297,11 +268,12 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     for batchData in data:
         i += 1
         x1 = batchData.data
+        att_mask = attention_mask(x1)
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.float().cuda()
         x = embed(x1).cuda()
-        out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
+        out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion, att_mask)
         
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
@@ -320,25 +292,41 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
 def validation(encoder, decoder, data):
     for batchData in data:
         x1 = batchData.data
+        att_mask = torch.zeros(x1.size()[0], x1.size()[1], 1, device=device)
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.float().cuda()
         x = embed(x1).cuda()
-        test_output = forward_pass_val(encoder, decoder, x)
+        test_output = forward_pass_val(encoder, decoder, x, att_mask)
         break
     print('TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST')
     print(display(x1))
     print(display(test_output))
 
 #%% Training op
+if load_model:
+    encoder = torch.load(PATH + '_encoder')
+    decoder = torch.load(PATH + '_decoder')
+else:
+    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
+    decoder = BiDecoderRNN(1, hidden_size).to(device)
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
 dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none')
 
 #%%
 EPOCHS = 30
-for epoch in range(1, EPOCHS + 1):
-    batch_size=20
-    train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-    batch_size=1
-    validation(encoder, decoder, dataset_iter_val)
+
+try:
+    for epoch in range(1, EPOCHS + 1):
+        batch_size=20
+        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+        batch_size=1
+        validation(encoder, decoder, dataset_iter_val)
+    if save_model:
+        torch.save(encoder, PATH + '_encoder')
+        torch.save(decoder, PATH + '_decoder')
+except KeyboardInterrupt:
+    if save_model:
+        torch.save(encoder, PATH + '_encoder')
+        torch.save(decoder, PATH + '_decoder')
