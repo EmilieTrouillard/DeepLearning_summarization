@@ -12,27 +12,28 @@ from torch import nn
 import torch.optim as optim
 import socket
 
-MAX_LENGTH=966 #summary max length
+MAX_LENGTH=200 #summary max length
 vocab_size = 80 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 10 #How many epochs we train
-attention_features = 2 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 10000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+LEARNING_RATE = 0.001
+layers_enc=2 #Num of layers in the encoder
+layers_dec=2 #Num of layers in the decoder
+
+hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
+
 
 if socket.gethostname() == 'jacob':
-    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_short.csv'
-    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_short.csv'
+    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_long.csv'
+    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
 glove_dim = 50
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-layers_enc=2 #Num of layers in the encoder
-layers_dec=2 #Num of layers in the decoder
-
-hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
 #TODO: How do we enable sort in dataloader?
 
@@ -50,7 +51,7 @@ validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.build_vocab(train_set)
 vocab = TEXT.vocab
-#GloVe mebedding function
+#GloVe embedding function
 embed = torch.nn.Embedding(len(vocab), glove_dim)
 
 #This is the glove embedding for every word in vocab, we dont need to load it into memory
@@ -236,7 +237,7 @@ def forward_pass_val(encoder, decoder, x):
     while not EOS and len(out) < len(x):
         attention = 0 #TODO: Implement attention
         output, (hidden_dec, cell_state_dec) = decoder.forward(attention, label_hat, hidden_enc, cell_state_enc)
-#        out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
+        #out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
         index = torch.argmax(output, -1)
         label_hat[:] = index
         if label_hat == 3:
@@ -259,7 +260,7 @@ for examples in dataset_iter:
 encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
 decoder = BiDecoderRNN(1, hidden_size).to(device)
 
-out, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion)
+out, loss, label_hat = forward_pass(encoder, decoder, x, y, nn.CrossEntropyLoss())
 #%%        
 #encoder = BiEncoderRNN(glove_dim, h_size_enc)
 #enc_h = BiEncoderRNN.initHidden(encoder)
@@ -321,7 +322,6 @@ def validation(encoder, decoder, data):
     print(display(test_output))
 
 #%% Training op
-LEARNING_RATE = 0.001
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
 dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none')
