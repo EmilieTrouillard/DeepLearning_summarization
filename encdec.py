@@ -330,4 +330,4 @@ criterion = nn.CrossEntropyLoss(reduction='none')
 EPOCHS = 30
 for epoch in range(1, EPOCHS + 1):
     train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-#    validation(encoder, decoder, dataset_iter_val)
+    validation(encoder, decoder, dataset_iter_val)
