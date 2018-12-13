@@ -13,7 +13,7 @@ import torch.optim as optim
 import socket
 
 MAX_LENGTH=200 #summary max length
-vocab_size = 80 #Size of the vocab
+vocab_size = 40 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 10 #How many epochs we train
 attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
@@ -25,7 +25,7 @@ layers_dec=2 #Num of layers in the decoder
 
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
-save_model = True
+save_model = False
 load_model = False
 
 
@@ -34,8 +34,8 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
     PATH = ''
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
-    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short_unique.csv'
+    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short_unique.csv'
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
@@ -56,7 +56,8 @@ train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', L
 validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
 
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
-LABEL.build_vocab(train_set)
+#LABEL.build_vocab(train_set, max_size = vocab_size, vectors ="glove.6B."+str(glove_dim)+"d")
+LABEL.vocab = TEXT.vocab
 vocab = TEXT.vocab
 #GloVe embedding function
 embed = torch.nn.Embedding(len(vocab), glove_dim)
@@ -167,13 +168,13 @@ class BiDecoderRNN(nn.Module):
             old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
             new_enc = self.reduce_dim(old_enc)
             new_cell = self.reduce_dim(old_cell)
+            coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
         else:
             new_enc = hidden_enc
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         
         pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda() 
-        coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
         #Attention
         #We loop over t in the equation

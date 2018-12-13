@@ -24,8 +24,8 @@ layers_dec=2 #Num of layers in the decoder
 
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
-save_model = True
-load_model = True
+save_model = False
+load_model = False
 
 
 if socket.gethostname() == 'jacob':
@@ -33,8 +33,8 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
     PATH = ''
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
-    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short_unique.csv'
+    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short_unique.csv'
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 

@@ -167,13 +167,13 @@ class BiDecoderRNN(nn.Module):
             old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
             new_enc = self.reduce_dim(old_enc)
             new_cell = self.reduce_dim(old_cell)
+            coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
         else:
             new_enc = hidden_enc
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         
         pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda() 
-        coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
         #Attention
         #We loop over t in the equation
