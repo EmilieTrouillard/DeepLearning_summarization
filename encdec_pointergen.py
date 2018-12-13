@@ -14,7 +14,7 @@ import copy
 import socket
 
 MAX_LENGTH=200 #summary max length
-vocab_size = 80 #Size of the vocab
+vocab_size = 40 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 10 #How many epochs we train
 attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
@@ -31,8 +31,8 @@ load_model = False
 
 
 if socket.gethostname() == 'jacob':
-    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_long.csv'
-    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
+    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train.csv'
+    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation.csv'
     PATH = ''
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
@@ -58,7 +58,8 @@ validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('
 
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.vocab = TEXT.vocab
-vocab = TEXT.vocab
+vocab = copy.deepcopy(TEXT.vocab)
+
 #GloVe embedding function
 embed = torch.nn.Embedding(len(vocab), glove_dim)
 
@@ -108,7 +109,7 @@ def attention_mask(x):
 
 
 def display(x):
-    return ' '.join([TEXT.vocab.itos[i] for i in x[:,0] if TEXT.vocab.itos[i] != '<pad>'])
+    return ' '.join([vocab_ext.itos[i] for i in x[:,0] if TEXT.vocab.itos[i] != '<pad>'])
      
 #%%
 """
@@ -160,9 +161,8 @@ class BiDecoderRNN(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
-    def forward(self, output_enc, input_dec, hidden_enc, cell_state_enc, att_mask, first_word=True):
+    def forward(self, output_enc, real_index, input_dec, hidden_enc, cell_state_enc, att_mask, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
-
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
         if first_word:
@@ -176,11 +176,8 @@ class BiDecoderRNN(nn.Module):
             new_enc = hidden_enc
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
-        
-        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda() 
-        
-        attention_list = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
-        
+        pvocab = torch.zeros((len(output_dec), batch_size, int(torch.max(real_index)+1))).cuda() 
+        attention_list = torch.zeros(output_dec.size()[0], batch_size, int(torch.max(real_index)+1), device=device)
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
         
         pgen = torch.zeros(len(output_dec),batch_size,1).cuda()
@@ -195,8 +192,13 @@ class BiDecoderRNN(nn.Module):
             e = self.attn_out(e)
             e = e + att_mask
             attention = self.softmax(e)
-            attention_list[t] = attention
-            
+            try:
+                for i in range(attention.size()[0]):
+                    for j in range(attention.size()[1]):
+                        k = int(real_index[i,j])
+                        attention_list[t,j,k] = attention_list[t,j,k] + attention[i,j]
+            except:
+                pass
             coverage_loss[t] = torch.sum(torch.min(attention, coverage), dim=0)
             coverage = coverage + attention
             
@@ -216,20 +218,20 @@ class BiDecoderRNN(nn.Module):
             p_vocab = torch.cat((output_dec[t:t+1],context),2)
             p_vocab = self.linearVocab1(p_vocab)
             p_vocab = self.linearVocab2(p_vocab)
+            p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size)).cuda()), dim=2)
             pvocab[t] = p_vocab
 
         #Multiply pvocab with pointer generation probability            
         pvocab = pvocab * pgen
-        attention_list = attention_list * (1-pgen)
-        
         return pvocab, coverage_loss, (hidden_dec, cell_state_dec)
 
  #reduction='none' because we want one loss per element and then apply the mask
-def forward_pass(encoder, decoder, x, label, criterion, att_mask):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
     """
     Executes a forward pass through the whole model.
     :param encoder:
     :param decoder:
+    :param real_text: the input in real text
     :param x: input to the encoder, shape [batch, seq_in_len]
     :param t: target output predictions for decoder, shape [batch, seq_t_len]
     :param criterion: loss function
@@ -245,7 +247,7 @@ def forward_pass(encoder, decoder, x, label, criterion, att_mask):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     
-    output, cov_loss, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label[:-1], hidden_enc, cell_state_enc, att_mask)
+    output, cov_loss, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, label[:-1], hidden_enc, cell_state_enc, att_mask)
         
     
     out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
@@ -268,7 +270,7 @@ def forward_pass(encoder, decoder, x, label, criterion, att_mask):
     return output, total_lossCE, total_loss, label_hat
 
         
-def forward_pass_val(encoder, decoder, x, att_mask):
+def forward_pass_val(encoder, decoder, real_index, x, att_mask):
     #Reinitialize the state to zero since we have a new sample now.
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=False)
     
@@ -286,8 +288,7 @@ def forward_pass_val(encoder, decoder, x, att_mask):
         EOS = True
     out.append(index)
     while not EOS and len(out) < len(x):
-        output, _, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, label_hat, hidden_dec, cell_state_dec, att_mask, first_word=False)
-
+        output, _, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, label_hat, hidden_dec, cell_state_dec, att_mask, first_word=False)
         index = torch.argmax(output, -1)
         label_hat[:] = index
         if label_hat == 3:
@@ -302,6 +303,25 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     decoder.train()
     i = 0
     for batchData in data:
+        vocab_ext = copy.deepcopy(vocab)
+        try:
+            real_text = data.data()[i*batch_size:(i+1)*batch_size]
+        except:
+            real_text = data.data()[i*batch_size:]
+        length = 0
+        for j in range(len(real_text)):
+            if len(real_text[j].data) > length:
+                length = len(real_text[j].data)
+        real_index = torch.zeros(batch_size, length + 2)
+        for j in range(batch_size):
+            real_index[j,0] = 2 #<bos>
+            real_index[j, len(real_text[j].data) + 1] = 3 #<eos>            
+            for k in range(len(real_text[j].data)):
+                if vocab_ext.stoi[real_text[j].data[k]] == 0:
+                    vocab_ext.stoi[real_text[j].data[k]] = len(vocab_ext.itos)
+                    vocab_ext.itos.extend([real_text[j].data[k]])
+                real_index[j, k + 1] = vocab_ext.stoi[real_text[j].data[k]]    
+        real_index = torch.transpose(real_index,0,1)
         i += 1
         x1 = batchData.data
         att_mask = attention_mask(x1)
@@ -309,31 +329,58 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.float().cuda()
         x = embed(x1).cuda()
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, x, y, criterion, att_mask)
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask)
         
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
-        if i % 100 == 0:
+        if i % 1 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss))
-        if i % 500 == 0:
+        if i % 20 == 0:
             print('input')
             print(display(x1))
             print('output')
             print(display(label_hat))
 
 def validation(encoder, decoder, data):
+    i = 0
     for batchData in data:
+        vocab_ext = copy.deepcopy(vocab)
+        try:
+            real_text = data.data()[i*batch_size:(i+1)*batch_size]
+        except:
+            real_text = data.data()[i*batch_size:]
+        length = 0
+        for j in range(len(real_text)):
+            if len(real_text[j].data) > length:
+                length = len(real_text[j].data)
+        real_index = torch.zeros(batch_size, length + 2)
+        for j in range(batch_size):
+            real_index[j,0] = 2 #<bos>
+            real_index[j, len(real_text[j].data) + 1] = 3 #<eos>            
+            for k in range(len(real_text[j].data)):
+                if vocab_ext.stoi[real_text[j].data[k]] == 0:
+                    vocab_ext.stoi[real_text[j].data[k]] = len(vocab_ext.itos)
+                    vocab_ext.itos.extend([real_text[j].data[k]])
+                real_index[j, k + 1] = vocab_ext.stoi[real_text[j].data[k]]    
+        real_index = torch.transpose(real_index,0,1)
+        for j in range(batch_size):
+            for k in range(len(real_text[j].data)):
+                if vocab_ext.stoi[real_text[j].data[k]] == 0:
+                    vocab_ext.stoi[real_text[j].data[k]] = len(vocab_ext.itos)
+                    vocab_ext.itos.extend([real_text[j].data[k]])
+                real_index[j, k] = vocab_ext.stoi[real_text[j].data[k]] 
+        i += 1
         x1 = batchData.data
         att_mask = torch.zeros(x1.size()[0], x1.size()[1], 1, device=device)
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.float().cuda()
         x = embed(x1).cuda()
-        test_output = forward_pass_val(encoder, decoder, x, att_mask)
+        test_output = forward_pass_val(encoder, decoder, real_index, x, att_mask)
         break
     print('TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST')
     print(display(x1))
