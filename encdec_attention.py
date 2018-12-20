@@ -13,7 +13,7 @@ import torch.optim as optim
 import socket
 
 MAX_LENGTH=200 #summary max length
-vocab_size = 80 #Size of the vocab
+vocab_size = 40 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 10 #How many epochs we train
 attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
@@ -55,7 +55,8 @@ train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', L
 validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
 
 TEXT.build_vocab(train_set, max_size = vocab_size, vectors="glove.6B."+str(glove_dim)+"d")
-LABEL.build_vocab(train_set)
+LABEL.vocab = TEXT.vocab
+
 vocab = TEXT.vocab
 #GloVe embedding function
 embed = torch.nn.Embedding(len(vocab), glove_dim)
