@@ -14,9 +14,9 @@ import copy
 import socket
 
 MAX_LENGTH=200 #summary max length
-vocab_size = 40 #Size of the vocab
-batch_size = 50 #Batch size
-epochs = 10 #How many epochs we train
+vocab_size = 3 #Size of the vocab
+batch_size = 20 #Batch size
+epochs = 30 #How many epochs we train
 attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 10000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.001
@@ -26,13 +26,14 @@ layers_dec=2 #Num of layers in the decoder
 
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
+
 save_model = True
 load_model = False
 
 
 if socket.gethostname() == 'jacob':
-    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_medium_unique.csv'
-    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
+    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_test.csv'
+    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/val_test.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
@@ -160,7 +161,7 @@ class BiDecoderRNN(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
-    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, first_word=True):
+    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
@@ -197,6 +198,7 @@ class BiDecoderRNN(nn.Module):
                         attention_list[t,j,k] = attention_list[t,j,k] + attention[i,j]
             except:
                 pass
+                print('passed')
             coverage_loss[t] = torch.sum(torch.min(attention, coverage), dim=0)
             coverage = coverage + attention
             
@@ -216,15 +218,21 @@ class BiDecoderRNN(nn.Module):
             p_vocab = torch.cat((output_dec[t:t+1],context),2)
             p_vocab = self.linearVocab1(p_vocab)
             p_vocab = self.linearVocab2(p_vocab)
+            #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size)).cuda()), dim=2)
+            for i in range(batch_size):
+                for j in range(attention.size()[0]):
+                    index = int(real_index[j,i])
+                    p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[t][i,0])
             pvocab[t] = p_vocab
 
         #Multiply pvocab with pointer generation probability            
         pvocab = pvocab * pgen
+        
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
-def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -245,11 +253,10 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     
-    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask)
+    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
         
     
     out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
-
     label_hat = torch.argmax(output, -1)
     loss = criterion(out.unsqueeze(3), label[1:].long())
 
@@ -268,7 +275,7 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
     return output, total_lossCE, total_loss, label_hat
 
         
-def forward_pass_val(encoder, decoder, real_index, x, att_mask):
+def forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext):
     #Reinitialize the state to zero since we have a new sample now.
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=False)
     
@@ -279,14 +286,14 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask):
     label_hat = torch.Tensor(1,1,1).cuda()
     label_hat[:] = 2
     out = []
-    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, first_word=True)
+    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True)
     index = torch.argmax(output, -1)
     label_hat[:] = index
     if label_hat == 3:
         EOS = True
     out.append(index)
     while not EOS and len(out) < len(x):
-        output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, first_word=False)
+        output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, vocab_ext, first_word=False)
         index = torch.argmax(output, -1)
         label_hat[:] = index
         if label_hat == 3:
@@ -302,32 +309,15 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     i = 0
     for batchData in data:
         vocab_ext = copy.deepcopy(vocab)
-        try:
-            real_text = data.data()[i*batch_size:(i+1)*batch_size]
-        except:
-            real_text = data.data()[i*batch_size:]
-        length = 0
-        for j in range(len(real_text)):
-            if len(real_text[j].data) > length:
-                length = len(real_text[j].data)
-        real_index = torch.zeros(batch_size, length + 2)
-        for j in range(batch_size):
-            real_index[j,0] = 2 #<bos>
-            real_index[j, len(real_text[j].data) + 1] = 3 #<eos>            
-            for k in range(len(real_text[j].data)):
-                if vocab_ext.stoi[real_text[j].data[k]] == 0:
-                    vocab_ext.stoi[real_text[j].data[k]] = len(vocab_ext.itos)
-                    vocab_ext.itos.extend([real_text[j].data[k]])
-                real_index[j, k + 1] = vocab_ext.stoi[real_text[j].data[k]]    
-        real_index = torch.transpose(real_index,0,1)
-        i += 1
-        x1 = batchData.data
-        att_mask = attention_mask(x1)
+        real_index = batchData.data
+        att_mask = attention_mask(real_index)
         y1 = batchData.label
         y = torch.reshape(y1,(np.shape(y1)[0], np.shape(y1)[1], 1))
         y = y.float().cuda()
-        x = embed(x1).cuda()
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask)
+        x = embed(real_index).cuda()
+        i += 1
+
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
         
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
@@ -339,7 +329,7 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss))
         if i % 20 == 0:
             print('input')
-            print(display(x1, vocab_ext))
+            print(display(real_index, vocab_ext))
             print('output')
             print(display(label_hat, vocab_ext))
             print('real output')
@@ -350,33 +340,15 @@ def validation(encoder, decoder, data):
     for batchData in data:
         i = 0
         vocab_ext = copy.deepcopy(vocab)
-        try:
-            real_text = data.data()[i*batch_size:(i+1)*batch_size]
-        except:
-            real_text = data.data()[i*batch_size:]
-        length = 0
-        for j in range(len(real_text)):
-            if len(real_text[j].data) > length:
-                length = len(real_text[j].data)
-        real_index = torch.zeros(batch_size, length + 2)
-        for j in range(batch_size):
-            real_index[j,0] = 2 #<bos>
-            real_index[j, len(real_text[j].data) + 1] = 3 #<eos>            
-            for k in range(len(real_text[j].data)):
-                if vocab_ext.stoi[real_text[j].data[k]] == 0:
-                    vocab_ext.stoi[real_text[j].data[k]] = len(vocab_ext.itos)
-                    vocab_ext.itos.extend([real_text[j].data[k]])
-                real_index[j, k + 1] = vocab_ext.stoi[real_text[j].data[k]]    
-        real_index = torch.transpose(real_index,0,1)
-        i += 1
-        x1 = batchData.data
-        att_mask = torch.zeros(x1.size()[0], x1.size()[1], 1, device=device)
+        real_index = batchData.data
+        att_mask = torch.zeros(real_index.size()[0], real_index.size()[1], 1, device=device)
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.long().cuda()
-        x = embed(x1).cuda()
-        test_output = forward_pass_val(encoder, decoder, real_index, x, att_mask)
+        x = embed(real_index).cuda()
+        test_output = forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext)
         test_output = test_output.cuda()
+        i += 1
         if len(test_output) == len(y[1:]):
             if len(test_output) == sum(test_output == y[1:]):
                 acc.append[1]
@@ -396,10 +368,9 @@ dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none')
 
 #%%
-EPOCHS = 20
 
 try:
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, epochs + 1):
         batch_size=batch_size
         train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
     batch_size=1
