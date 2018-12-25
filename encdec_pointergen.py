@@ -13,14 +13,13 @@ import torch.optim as optim
 import copy
 import socket
 
-MAX_LENGTH=200 #summary max length
-vocab_size = 3 #Size of the vocab
+vocab_size = 75 #Size of the vocab
 batch_size = 20 #Batch size
-epochs = 30 #How many epochs we train
-attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
-vocab_features = 10000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+epochs = 50 #How many epochs we train
+attention_features = 1000 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+vocab_features = 1000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.001
-LAMBDA_COVERAGE = 1
+LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
 
@@ -32,8 +31,8 @@ load_model = False
 
 
 if socket.gethostname() == 'jacob':
-    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_test.csv'
-    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/val_test.csv'
+    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_medium_unique.csv'
+    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
@@ -78,22 +77,11 @@ dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=0,
 Mask functions
 """
 
-def label_mask(y, y_hat):
-    """y_hat is the output tensor from the network
-       y is the label tensor (no embedding)
+def label_mask(y):
+    """y is the label tensor (no glove embedding)
        returns the mask to use for negating the padding"""
-    batch_size = np.shape(y)[1]
-    max_len = max(len(y), len(y_hat))
-    mask = torch.ones(max_len, batch_size, device=device) 
-    for i in range(batch_size):
-        try:
-            y_hat_index =  np.where(y_hat[:,i]==1)[0][0]
-            y_index = np.where(y[:,i]==1)[0][0]
-            index = max(y_hat_index, y_index)
-            mask[index+1:, i] = 0
-        except:
-            pass
-    return mask.float().unsqueeze(2)
+    mask = (y[1:] != 1)
+    return mask.float().cuda()
 
 def attention_mask(x):
     """x is the training data tensor (no embedding)
@@ -110,7 +98,7 @@ def attention_mask(x):
 
 
 def display(x, vocab_ext):
-    return ' '.join([vocab_ext.itos[i] for i in x[:,0] if vocab_ext.itos[i] != '<pad>'])
+    return ' '.join([vocab_ext.itos[i] for i in x if vocab_ext.itos[i] != '<pad>'])
      
 #%%
 """
@@ -156,6 +144,7 @@ class BiDecoderRNN(nn.Module):
         self.tanh = nn.Tanh()
         self.attn_out = nn.Linear(attention_features, 1, bias=False)
         self.softmax = nn.Softmax(dim=0)
+        self.softmaxvocab = nn.Softmax(dim=2)
         self.linearVocab1 = nn.Linear(2*hidden_size+hidden_size,vocab_features, bias=True) 
         self.linearVocab2 = nn.Linear(vocab_features, vocab_size, bias=True) 
         self.sigmoid = nn.Sigmoid()
@@ -176,10 +165,10 @@ class BiDecoderRNN(nn.Module):
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         pvocab = torch.zeros((len(output_dec), batch_size, max(vocab_size,int(torch.max(real_index)+1)))).cuda() 
-        attention_list = torch.zeros(output_dec.size()[0], batch_size, int(torch.max(real_index)+1), device=device)
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
         
-        pgen = torch.zeros(len(output_dec),batch_size,1).cuda()
+        #pgen = torch.zeros(len(output_dec),batch_size,1).cuda()
+        pgen = torch.zeros(batch_size, 1).cuda()        
         #Attention
         #We loop over t in the equation
         for t in range(len(output_dec)):
@@ -191,44 +180,44 @@ class BiDecoderRNN(nn.Module):
             e = self.attn_out(e)
             e = e + att_mask
             attention = self.softmax(e)
-            try:
-                for i in range(attention.size()[0]):
-                    for j in range(attention.size()[1]):
-                        k = int(real_index[i,j])
-                        attention_list[t,j,k] = attention_list[t,j,k] + attention[i,j]
-            except:
-                pass
-                print('passed')
+      
             coverage_loss[t] = torch.sum(torch.min(attention, coverage), dim=0)
             coverage = coverage + attention
             
             #Calculate context vector sum(a_i^t * h_i)
             #This becomes a weighted sum of hidden states, hidden states created
             #after inputing a word with high attention has more weight
-            context = torch.sum(attention * output_enc, dim=0).reshape((1,batch_size, 2* self.hidden_size))
+            context = torch.sum(attention * output_enc, dim=0).reshape((1,batch_size, 2*self.hidden_size))
                      
             
             #Calculate pointer generation probability
             in_pgen = torch.cat((context, output_dec[t:t+1], input_dec[t:t+1]),dim=2)
-            pgen[t] = self.pgen_linear(in_pgen)
-            pgen[t] = self.sigmoid(pgen[t])
+            
+            pgen = self.pgen_linear(in_pgen)
+            pgen = self.sigmoid(pgen)
+            #pgen[t] = self.pgen_linear(in_pgen)
+            #pgen[t] = self.sigmoid(pgen[t])
             
             
             #Calculate Pvocab (no softmax in training loop as it is included in cross entropy loss)
             p_vocab = torch.cat((output_dec[t:t+1],context),2)
             p_vocab = self.linearVocab1(p_vocab)
             p_vocab = self.linearVocab2(p_vocab)
+            p_vocab = self.softmaxvocab(p_vocab)
+
+            #Multiply pvocab with pointer generation probability
+            p_vocab = p_vocab * pgen
             #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size)).cuda()), dim=2)
             for i in range(batch_size):
                 for j in range(attention.size()[0]):
-                    index = int(real_index[j,i])
-                    p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[t][i,0])
+                    if real_index[j,i] == 1:
+                        break
+                    else:
+                        index = int(real_index[j,i])
+                        p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[0,i,0])
             pvocab[t] = p_vocab
-
-        #Multiply pvocab with pointer generation probability            
-        pvocab = pvocab * pgen
         
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
@@ -254,16 +243,16 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vo
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     
     output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
-        
     
-    out = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy
     label_hat = torch.argmax(output, -1)
-    loss = criterion(out.unsqueeze(3), label[1:].long())
 
-    
+    output = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy    
+    loss = criterion(output.unsqueeze(3), label[1:].long())
+
+  
     combined_loss = loss + LAMBDA_COVERAGE * cov_loss
 
-    mask = label_mask(label[1:], label_hat)
+    mask = label_mask(label)
     loss_mask = torch.sum(combined_loss * mask, dim=0) 
     loss_batch = loss_mask / torch.sum(mask, dim=0)
     total_loss = torch.mean(loss_batch)
@@ -328,12 +317,17 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss))
         if i % 20 == 0:
-            print('input')
-            print(display(real_index, vocab_ext))
+            #print('input')
+            #print(display(real_index, vocab_ext))
             print('output')
-            print(display(label_hat, vocab_ext))
+            try:
+                ind = np.where(y1[1:,0] == 1)[0][0]
+                print(display(label_hat[:ind,0], vocab_ext))
+            except:
+                print(display(label_hat[:,0], vocab_ext))
             print('real output')
-            print(display(y1[1:].squeeze(), vocab_ext))
+            print(display(y1[1:,0], vocab_ext))
+            
 
 def validation(encoder, decoder, data):
     acc = []
