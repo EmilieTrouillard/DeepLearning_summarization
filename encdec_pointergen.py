@@ -13,11 +13,11 @@ import torch.optim as optim
 import copy
 import socket
 
-vocab_size = 75 #Size of the vocab
+vocab_size = 100 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 50 #How many epochs we train
-attention_features = 1000 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
-vocab_features = 1000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+vocab_features = 20 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.001
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
@@ -164,11 +164,16 @@ class BiDecoderRNN(nn.Module):
             new_enc = hidden_enc
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
-        pvocab = torch.zeros((len(output_dec), batch_size, max(vocab_size,int(torch.max(real_index)+1)))).cuda() 
+        
+        
+#        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size,int(torch.max(real_index)+1)))).cuda() 
+        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda()
+
+
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
         
-        #pgen = torch.zeros(len(output_dec),batch_size,1).cuda()
         pgen = torch.zeros(batch_size, 1).cuda()        
+
         #Attention
         #We loop over t in the equation
         for t in range(len(output_dec)):
@@ -204,7 +209,6 @@ class BiDecoderRNN(nn.Module):
             p_vocab = self.linearVocab1(p_vocab)
             p_vocab = self.linearVocab2(p_vocab)
             p_vocab = self.softmaxvocab(p_vocab)
-
             #Multiply pvocab with pointer generation probability
             p_vocab = p_vocab * pgen
             #p_vocab is 1 x batch_size x vocab size
@@ -213,12 +217,11 @@ class BiDecoderRNN(nn.Module):
             for i in range(batch_size):
                 for j in range(attention.size()[0]):
                     if real_index[j,i] == 1:
-                        break
+                        pass
                     else:
                         index = int(real_index[j,i])
                         p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[0,i,0])
             pvocab[t] = p_vocab
-        
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
@@ -246,19 +249,19 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vo
     
     label_hat = torch.argmax(output, -1)
 
-    output = output.permute([0,2,1]) #N,C,d format where C number of classes for the Cross Entropy    
-    loss = criterion(output.unsqueeze(3), label[1:].long())
+    output = output.permute([1,2,0]).unsqueeze(3) #N,C,d format where C number of classes for the Cross Entropy 
+    label_ = label[1:].long().permute([1,2,0]).squeeze().unsqueeze(2)
+    loss = criterion(output, label_)
+    
+    combined_loss = loss + torch.mul(cov_loss.permute([1,0,2]), LAMBDA_COVERAGE)
 
-  
-    combined_loss = loss + LAMBDA_COVERAGE * cov_loss
-
-    mask = label_mask(label)
-    loss_mask = torch.sum(combined_loss * mask, dim=0) 
-    loss_batch = loss_mask / torch.sum(mask, dim=0)
+    mask = label_mask(label).permute([1,0,2])
+    loss_mask = torch.sum(combined_loss * mask, dim=1) 
+    loss_batch = loss_mask / torch.sum(mask, dim=1)
     total_loss = torch.mean(loss_batch)
     
-    loss_maskCE = torch.sum(loss * mask, dim=0) 
-    loss_batchCE = loss_maskCE / torch.sum(mask, dim=0)
+    loss_maskCE = torch.sum(loss * mask, dim=1) 
+    loss_batchCE = loss_maskCE / torch.sum(mask, dim=1)
     total_lossCE = torch.mean(loss_batchCE)
     
     return output, total_lossCE, total_loss, label_hat
