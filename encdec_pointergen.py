@@ -35,8 +35,8 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short.csv'
-    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_short.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
+    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
@@ -348,9 +348,9 @@ def validation(encoder, decoder, data):
         i += 1
         if len(test_output) == len(y[1:]):
             if len(test_output) == sum(test_output == y[1:]):
-                acc.append[1]
+                acc.append(1)
             else:
-                acc.append[0]
+                acc.append(0)
     return acc
 
 #%% Training op

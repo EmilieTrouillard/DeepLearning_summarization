@@ -12,7 +12,6 @@ from torch import nn
 import torch.optim as optim
 import copy
 import socket
-
 from torchtext.data import ReversibleField, BucketIterator
 
 from cnn_dm_torchtext_master.summarization import CNN, DailyMail
@@ -46,7 +45,7 @@ glove_dim = 50
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+CUDA_LAUNCH_BLOCKING=1 
 #TODO: How do we enable sort in dataloader?
 
 
@@ -269,6 +268,7 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vo
 
     output = output.permute([1,2,0]).unsqueeze(3) #N,C,d format where C number of classes for the Cross Entropy 
     label_ = label[1:].long().permute([1,2,0]).squeeze().unsqueeze(2)
+    
     loss = criterion(output, label_)
     
     combined_loss = loss + torch.mul(cov_loss.permute([1,0,2]), LAMBDA_COVERAGE)
@@ -330,6 +330,11 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = y.float().cuda()
         x = embed(real_index).cuda()
         i += 1
+        if np.bool(sum(torch.max(y.long(), dim=0)[0].squeeze() <= 
+                       torch.max(torch.tensor([vocab_size]*batch_size, device=device), 
+                                 torch.max(real_index, dim=0)[0].cuda())) != batch_size):
+            print("unknown word in target summary")
+            continue
         out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
         
         enc_optimizer.zero_grad()
@@ -377,8 +382,8 @@ def validation(encoder, decoder, data):
 
 #%% Training op
 if load_model:
-    encoder = torch.load(PATH + '_encoder_pgen')
-    decoder = torch.load(PATH + '_decoder_pgen')
+    encoder = torch.load(PATH + '_encoder_articles')
+    decoder = torch.load(PATH + '_decoder_articles')
 else:
     encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
     decoder = BiDecoderRNN(1, hidden_size).to(device)
@@ -395,9 +400,9 @@ try:
     batch_size=1
     acc = validation(encoder, decoder, dataset_iter_val)
     if save_model:
-        torch.save(encoder, PATH + '_encoder_pgen')
-        torch.save(decoder, PATH + '_decoder_pgen')
+        torch.save(encoder, PATH + '_encoder_articles2')
+        torch.save(decoder, PATH + '_decoder_articles2')
 except KeyboardInterrupt:
     if save_model:
-        torch.save(encoder, PATH + '_encoder_pgen')
-        torch.save(decoder, PATH + '_decoder_pgen')
+        torch.save(encoder, PATH + '_encoder_articles2')
+        torch.save(decoder, PATH + '_decoder_articles2')
