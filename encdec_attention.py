@@ -13,7 +13,7 @@ import torch.optim as optim
 import socket
 
 MAX_LENGTH=200 #summary max length
-vocab_size = 40 #Size of the vocab
+vocab_size = 60 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 10 #How many epochs we train
 attention_features = 20 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
@@ -25,12 +25,12 @@ layers_dec=2 #Num of layers in the decoder
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
 
 save_model = False
-load_model = False
+load_model = True
 
 
 if socket.gethostname() == 'jacob':
-    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_long.csv'
-    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_long.csv'
+    path = '/home/jacob/Desktop/DeepLearning_summarization/Data/train_medium_unique.csv'
+    path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = ''
 else:
     path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short_unique.csv'
@@ -291,43 +291,65 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
             print(display(label_hat))
 
 def validation(encoder, decoder, data):
+    acc = []
     for batchData in data:
-        x1 = batchData.data
-        att_mask = torch.zeros(x1.size()[0], x1.size()[1], 1, device=device)
+        i = 0
+        real_index = batchData.data
+        att_mask = torch.zeros(real_index.size()[0], real_index.size()[1], 1, device=device)
         y = batchData.label
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
-        y = y.float().cuda()
-        x = embed(x1).cuda()
+        y = y.long().cuda()
+        x = embed(real_index).cuda()
         test_output = forward_pass_val(encoder, decoder, x, att_mask)
-        break
-    print('TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST')
-    print(display(x1))
-    print(display(test_output))
+        test_output = test_output.cuda()
+        i += 1
+        if len(test_output) == len(y[1:]):
+            if len(test_output) == sum(test_output == y[1:]):
+                acc.append[1]
+            else:
+                acc.append[0]
+    return acc
+
+
+
+#def validation(encoder, decoder, data):
+#    for batchData in data:
+#        x1 = batchData.data
+#        att_mask = torch.zeros(x1.size()[0], x1.size()[1], 1, device=device)
+#        y = batchData.label
+#        y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
+#        y = y.float().cuda()
+#        x = embed(x1).cuda()
+#        test_output = forward_pass_val(encoder, decoder, x, att_mask)
+#        break
+#    print('TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST TEST')
+#    print(display(x1))
+#    print(display(test_output))
 
 #%% Training op
-if load_model:
-    encoder = torch.load(PATH + '_encoder')
-    decoder = torch.load(PATH + '_decoder')
-else:
-    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
-    decoder = BiDecoderRNN(1, hidden_size).to(device)
-enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
-dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
-criterion = nn.CrossEntropyLoss(reduction='none')
+#if load_model:
+#    encoder = torch.load(PATH + '_encoder')
+#    decoder = torch.load(PATH + '_decoder')
+#else:
+#    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
+#    decoder = BiDecoderRNN(1, hidden_size).to(device)
+#enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
+#dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
+#criterion = nn.CrossEntropyLoss(reduction='none')
 
 #%%
-EPOCHS = 30
-
-try:
-    for epoch in range(1, EPOCHS + 1):
-        batch_size=20
-        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-        batch_size=1
-        validation(encoder, decoder, dataset_iter_val)
-    if save_model:
-        torch.save(encoder, PATH + '_encoder_attention')
-        torch.save(decoder, PATH + '_decoder_attention')
-except KeyboardInterrupt:
-    if save_model:
-        torch.save(encoder, PATH + '_encoder_attention')
-        torch.save(decoder, PATH + '_decoder_attention')
+#EPOCHS = 30
+#
+#try:
+#    for epoch in range(1, EPOCHS + 1):
+#        batch_size=20
+#        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+#        batch_size=1
+#        validation(encoder, decoder, dataset_iter_val)
+#    if save_model:
+#        torch.save(encoder, PATH + '_encoder_attention')
+#        torch.save(decoder, PATH + '_decoder_attention')
+#except KeyboardInterrupt:
+#    if save_model:
+#        torch.save(encoder, PATH + '_encoder_attention')
+#        torch.save(decoder, PATH + '_decoder_attention')

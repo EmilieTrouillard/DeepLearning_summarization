@@ -13,11 +13,11 @@ import torch.optim as optim
 import copy
 import socket
 
-vocab_size = 100 #Size of the vocab
+vocab_size = 60 #Size of the vocab
 batch_size = 20 #Batch size
 epochs = 50 #How many epochs we train
-attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
-vocab_features = 20 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+attention_features = 800 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+vocab_features = 5000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.001
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
@@ -50,7 +50,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 """
 Data loader part
 """
-
+#
 TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
 train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
@@ -60,9 +60,6 @@ TEXT.build_vocab(train_set, vectors="glove.6B."+str(glove_dim)+"d")
 LABEL.vocab = TEXT.vocab
 vocab = copy.deepcopy(TEXT.vocab)
 
-#GloVe embedding function
-embed = torch.nn.Embedding(len(vocab), glove_dim)
-
 #This is the glove embedding for every word in vocab, we dont need to load it into memory
 #w = embed.weight.data.copy_(vocab.vectors)
 
@@ -71,7 +68,31 @@ dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=0,
         train=True, shuffle=True, repeat=False, sort=False)
 
 dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=0,
-        train=True, shuffle=True, repeat=False, sort=False)
+        train=False, shuffle=False, repeat=False, sort=False)
+
+
+#from torchtext.data import ReversibleField, BucketIterator
+#
+#from summarization import CNN, DailyMail
+#
+#FIELD = ReversibleField(batch_first=True, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
+#
+#split_cnn = CNN.splits(fields=FIELD)
+#split_dm = DailyMail.splits(fields=FIELD)
+#
+#for scnn, sdm in zip(split_cnn, split_dm):
+#    scnn.examples.extend(sdm)
+#split = split_cnn
+#
+#FIELD.build_vocab(split[0].src)
+#print(len(FIELD.vocab))
+#vocab = FIELD.vocab
+#dataset_iter, dataset_iter_val2, dataset_iter_val = BucketIterator.splits(split, batch_size=3, sort_key=lambda x: len(x.text))
+
+
+#GloVe embedding function
+embed = torch.nn.Embedding(len(vocab), glove_dim)
+
 
 """
 Mask functions
@@ -166,8 +187,8 @@ class BiDecoderRNN(nn.Module):
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         
         
-#        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size,int(torch.max(real_index)+1)))).cuda() 
-        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda()
+        pvocab = torch.zeros((len(output_dec), batch_size, int(torch.max(real_index)+1))).cuda() 
+        #pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda()
 
 
         coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
@@ -354,28 +375,28 @@ def validation(encoder, decoder, data):
     return acc
 
 #%% Training op
-if load_model:
-    encoder = torch.load(PATH + '_encoder_pgen')
-    decoder = torch.load(PATH + '_decoder_pgen')
-else:
-    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
-    decoder = BiDecoderRNN(1, hidden_size).to(device)
-enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
-dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
-criterion = nn.CrossEntropyLoss(reduction='none')
-
-#%%
-
-try:
-    for epoch in range(1, epochs + 1):
-        batch_size=batch_size
-        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-    batch_size=1
-    acc = validation(encoder, decoder, dataset_iter_val)
-    if save_model:
-        torch.save(encoder, PATH + '_encoder_pgen')
-        torch.save(decoder, PATH + '_decoder_pgen')
-except KeyboardInterrupt:
-    if save_model:
-        torch.save(encoder, PATH + '_encoder_pgen')
-        torch.save(decoder, PATH + '_decoder_pgen')
+#if load_model:
+#    encoder = torch.load(PATH + '_encoder_pgen')
+#    decoder = torch.load(PATH + '_decoder_pgen')
+#else:
+#    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
+#    decoder = BiDecoderRNN(1, hidden_size).to(device)
+#enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
+#dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
+#criterion = nn.CrossEntropyLoss(reduction='none')
+#
+##%%
+#
+#try:
+#    for epoch in range(1, epochs + 1):
+#        batch_size=batch_size
+#        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+#    batch_size=1
+#    acc = validation(encoder, decoder, dataset_iter_val)
+#    if save_model:
+#        torch.save(encoder, PATH + '_encoder_pgen')
+#        torch.save(decoder, PATH + '_decoder_pgen')
+#except KeyboardInterrupt:
+#    if save_model:
+#        torch.save(encoder, PATH + '_encoder_pgen')
+#        torch.save(decoder, PATH + '_decoder_pgen')
