@@ -12,19 +12,22 @@ from torch import nn
 import torch.optim as optim
 import copy
 import socket
+from torchtext.data import ReversibleField, BucketIterator
 
-vocab_size = 60 #Size of the vocab
-batch_size = 20 #Batch size
+from cnn_dm_torchtext_master.summarization import CNN, DailyMail
+
+vocab_size = 50000 #Size of the vocab
+batch_size = 2 #Batch size
 epochs = 50 #How many epochs we train
-attention_features = 800 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
-vocab_features = 5000 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+attention_features = 50 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+vocab_features = 20 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.001
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
-
+MAX_LENGTH = 100
 hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
-
+TRUNC_LENGTH = 400
 
 save_model = True
 load_model = False
@@ -42,7 +45,7 @@ glove_dim = 50
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+CUDA_LAUNCH_BLOCKING=1 
 #TODO: How do we enable sort in dataloader?
 
 
@@ -50,50 +53,43 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 """
 Data loader part
 """
-#
-TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
-LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
-train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
-validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
 
-TEXT.build_vocab(train_set, vectors="glove.6B."+str(glove_dim)+"d")
-LABEL.vocab = TEXT.vocab
-vocab = copy.deepcopy(TEXT.vocab)
+#TEXT = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
+#LABEL = data.Field(init_token='<bos>', eos_token='<eos>', sequential=True)
+#train_set = data.TabularDataset(path, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
+#validation_set = data.TabularDataset(path_val, 'CSV', fields=[('data', TEXT), ('label', LABEL)], skip_header=True ) 
+#
+#TEXT.build_vocab(train_set, vectors="glove.6B."+str(glove_dim)+"d")
+#LABEL.vocab = TEXT.vocab
+
+
+#GloVe embedding function
 
 #This is the glove embedding for every word in vocab, we dont need to load it into memory
 #w = embed.weight.data.copy_(vocab.vectors)
 
 #Data loader iterator
-dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=0,
-        train=True, shuffle=True, repeat=False, sort=False)
-
-dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=0,
-        train=False, shuffle=False, repeat=False, sort=False)
-
-
-#from torchtext.data import ReversibleField, BucketIterator
+#dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=0,
+#        train=True, shuffle=True, repeat=False, sort=False)
 #
-#from summarization import CNN, DailyMail
+#dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=0,
+#        train=True, shuffle=True, repeat=False, sort=False)
 #
-#FIELD = ReversibleField(batch_first=True, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
-#
-#split_cnn = CNN.splits(fields=FIELD)
-#split_dm = DailyMail.splits(fields=FIELD)
-#
-#for scnn, sdm in zip(split_cnn, split_dm):
-#    scnn.examples.extend(sdm)
-#split = split_cnn
-#
-#FIELD.build_vocab(split[0].src)
-#print(len(FIELD.vocab))
-#vocab = FIELD.vocab
-#dataset_iter, dataset_iter_val2, dataset_iter_val = BucketIterator.splits(split, batch_size=3, sort_key=lambda x: len(x.text))
 
+FIELD = ReversibleField(batch_first=False, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
 
-#GloVe embedding function
+split_cnn = CNN.splits(fields=FIELD)
+split_dm = DailyMail.splits(fields=FIELD)
+
+for scnn, sdm in zip(split_cnn, split_dm):
+    scnn.examples.extend(sdm)
+split = split_cnn
+
+FIELD.build_vocab(split[0].src)
+vocab = copy.deepcopy(FIELD.vocab)
+
+dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort_key=lambda x: len(x.text))
 embed = torch.nn.Embedding(len(vocab), glove_dim)
-
-
 """
 Mask functions
 """
@@ -187,13 +183,13 @@ class BiDecoderRNN(nn.Module):
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
         
         
-        pvocab = torch.zeros((len(output_dec), batch_size, int(torch.max(real_index)+1))).cuda() 
-        #pvocab = torch.zeros((len(output_dec), batch_size, vocab_size)).cuda()
+#        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size,int(torch.max(real_index)+1)))).cuda() 
+        pvocab = torch.zeros((len(output_dec), batch_size, max(torch.max(real_index)+1, vocab_size)), device=device)
 
 
-        coverage_loss = torch.zeros((len(output_dec), batch_size, 1)).cuda()
+        coverage_loss = torch.zeros((len(output_dec), batch_size, 1), device=device)
         
-        pgen = torch.zeros(batch_size, 1).cuda()        
+        pgen = torch.zeros(batch_size, 1, device=device)  
 
         #Attention
         #We loop over t in the equation
@@ -230,11 +226,11 @@ class BiDecoderRNN(nn.Module):
             p_vocab = self.linearVocab1(p_vocab)
             p_vocab = self.linearVocab2(p_vocab)
             p_vocab = self.softmaxvocab(p_vocab)
-            #Multiply pvocab with pointer generation probability
+            #Multiply pvocab with generation probability
             p_vocab = p_vocab * pgen
             #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
-                p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size)).cuda()), dim=2)
+                p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size), device=device)), dim=2)
             for i in range(batch_size):
                 for j in range(attention.size()[0]):
                     if real_index[j,i] == 1:
@@ -272,6 +268,7 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vo
 
     output = output.permute([1,2,0]).unsqueeze(3) #N,C,d format where C number of classes for the Cross Entropy 
     label_ = label[1:].long().permute([1,2,0]).squeeze().unsqueeze(2)
+    
     loss = criterion(output, label_)
     
     combined_loss = loss + torch.mul(cov_loss.permute([1,0,2]), LAMBDA_COVERAGE)
@@ -279,8 +276,11 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vo
     mask = label_mask(label).permute([1,0,2])
     loss_mask = torch.sum(combined_loss * mask, dim=1) 
     loss_batch = loss_mask / torch.sum(mask, dim=1)
-    total_loss = torch.mean(loss_batch)
-    
+    try:
+        total_loss = torch.mean(loss_batch)
+    except RuntimeError:
+        print('error 77, loss_batch: ')
+        print(loss_batch)
     loss_maskCE = torch.sum(loss * mask, dim=1) 
     loss_batchCE = loss_maskCE / torch.sum(mask, dim=1)
     total_lossCE = torch.mean(loss_batchCE)
@@ -296,7 +296,7 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext):
 
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
     EOS = False
-    label_hat = torch.Tensor(1,1,1).cuda()
+    label_hat = torch.Tensor(1,1,1, device=device)
     label_hat[:] = 2
     out = []
     output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True)
@@ -305,7 +305,7 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext):
     if label_hat == 3:
         EOS = True
     out.append(index)
-    while not EOS and len(out) < len(x):
+    while not EOS and len(out) < MAX_LENGTH:
         output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, vocab_ext, first_word=False)
         index = torch.argmax(output, -1)
         label_hat[:] = index
@@ -322,14 +322,19 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     i = 0
     for batchData in data:
         vocab_ext = copy.deepcopy(vocab)
-        real_index = batchData.data
+        real_index = batchData.src[0]
+        real_index = real_index[:TRUNC_LENGTH,:]
         att_mask = attention_mask(real_index)
-        y1 = batchData.label
+        y1 = batchData.trg[0]
         y = torch.reshape(y1,(np.shape(y1)[0], np.shape(y1)[1], 1))
         y = y.float().cuda()
         x = embed(real_index).cuda()
         i += 1
-
+        if np.bool(sum(torch.max(y.long(), dim=0)[0].squeeze() <= 
+                       torch.max(torch.tensor([vocab_size]*batch_size, device=device), 
+                                 torch.max(real_index, dim=0)[0].cuda())) != batch_size):
+            print("unknown word in target summary")
+            continue
         out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
         
         enc_optimizer.zero_grad()
@@ -337,10 +342,10 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
-        if i % 1 == 0:
+        if i % 2 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss))
-        if i % 20 == 0:
+        if i % 40 == 0:
             #print('input')
             #print(display(real_index, vocab_ext))
             print('output')
@@ -358,9 +363,10 @@ def validation(encoder, decoder, data):
     for batchData in data:
         i = 0
         vocab_ext = copy.deepcopy(vocab)
-        real_index = batchData.data
+        real_index = batchData.src[0]
+        real_index = real_index[:TRUNC_LENGTH,:]
         att_mask = torch.zeros(real_index.size()[0], real_index.size()[1], 1, device=device)
-        y = batchData.label
+        y = batchData.trg[0]
         y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
         y = y.long().cuda()
         x = embed(real_index).cuda()
@@ -375,28 +381,28 @@ def validation(encoder, decoder, data):
     return acc
 
 #%% Training op
-#if load_model:
-#    encoder = torch.load(PATH + '_encoder_pgen')
-#    decoder = torch.load(PATH + '_decoder_pgen')
-#else:
-#    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
-#    decoder = BiDecoderRNN(1, hidden_size).to(device)
-#enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
-#dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
-#criterion = nn.CrossEntropyLoss(reduction='none')
-#
-##%%
-#
-#try:
-#    for epoch in range(1, epochs + 1):
-#        batch_size=batch_size
-#        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
-#    batch_size=1
-#    acc = validation(encoder, decoder, dataset_iter_val)
-#    if save_model:
-#        torch.save(encoder, PATH + '_encoder_pgen')
-#        torch.save(decoder, PATH + '_decoder_pgen')
-#except KeyboardInterrupt:
-#    if save_model:
-#        torch.save(encoder, PATH + '_encoder_pgen')
-#        torch.save(decoder, PATH + '_decoder_pgen')
+if load_model:
+    encoder = torch.load(PATH + '_encoder_articles')
+    decoder = torch.load(PATH + '_decoder_articles')
+else:
+    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
+    decoder = BiDecoderRNN(1, hidden_size).to(device)
+enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
+dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
+criterion = nn.CrossEntropyLoss(reduction='none')
+
+#%%
+
+try:
+    for epoch in range(1, epochs + 1):
+        batch_size=batch_size
+        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+    batch_size=1
+    acc = validation(encoder, decoder, dataset_iter_val)
+    if save_model:
+        torch.save(encoder, PATH + '_encoder_articles2')
+        torch.save(decoder, PATH + '_decoder_articles2')
+except KeyboardInterrupt:
+    if save_model:
+        torch.save(encoder, PATH + '_encoder_articles2')
+        torch.save(decoder, PATH + '_decoder_articles2')
