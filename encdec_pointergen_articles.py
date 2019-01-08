@@ -16,17 +16,18 @@ import torch.optim as optim
 import copy
 import socket
 from torchtext.data import ReversibleField, BucketIterator
+import os
 #import torch.cuda as cutorch
 
 if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
-batch_size = 2 if dataset_type == 'articles' else 2  #Batch size
+batch_size = 16 if dataset_type == 'articles' else 2  #Batch size
 epochs = 1 #How many epochs we train
 attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.01
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
@@ -48,10 +49,10 @@ else:
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
-device = torch.device("cuda")# if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0")# if torch.cuda.is_available() else "cpu")
 #print("device: ", device, flush=True)
-CUDA_LAUNCH_BLOCKING=1 
-THC_CACHING_ALLOCATOR=1 #avoid CPU synchronizations https://github.com/torch/cutorch
+#os.environ['CUDA_LAUNCH_BLOCKING']='1' 
+os.environ['THC_CACHING_ALLOCATOR']='1' #avoid CPU synchronizations https://github.com/torch/cutorch
 #TODO: How do we enable sort in dataloader?
 
 
@@ -97,7 +98,7 @@ else:
     
     dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort_key=lambda x: len(x.text), device=device)
 
-embed = torch.nn.Embedding(len(vocab), glove_dim).to(device)
+embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
 Mask functions
 """
@@ -180,12 +181,13 @@ class BiDecoderRNN(nn.Module):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
+        input_size = output_enc.size()[0]
         if first_word:
             old_enc = torch.cat((hidden_enc[0:2],hidden_enc[2:]),dim=-1)
             old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
             new_enc = self.reduce_dim(old_enc)
             new_cell = self.reduce_dim(old_cell)
-            coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device)
+            coverage = torch.zeros(output_enc.size()[0], output_enc.size()[1], 1, device=device) #TODO: check if correck and change to input_size
         else:
             new_enc = hidden_enc
             new_cell = cell_state_enc
@@ -240,14 +242,19 @@ class BiDecoderRNN(nn.Module):
             #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size), device=device)), dim=2)
-            for i in range(batch_size):
-                for j in range(attention.size()[0]):
-                    if real_index[j,i] == 1:
-                        pass
-                    else:
-                        index = int(real_index[j,i])
-                        p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[0,i,0])
-            pvocab[t] = p_vocab
+#            for i in range(batch_size):
+#                for j in range(attention.size()[0]):
+#                    if real_index[j,i] == 1:
+#                        pass
+#                    else:
+#                        index = int(real_index[j,i])
+#                        p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[0,i,0])
+            big_vocab_size = max(vocab_size, torch.max(real_index) + 1)
+            pointer_distrib = torch.zeros(big_vocab_size, batch_size, device=device)
+            pointer_distrib = pointer_distrib.scatter_add_(0, real_index, attention.squeeze()).squeeze().t().reshape(1,batch_size*big_vocab_size).squeeze()
+            pointer_distrib_prob = torch.ger(1-pgen.squeeze(0).squeeze(1), pointer_distrib).reshape(batch_size, batch_size, big_vocab_size)
+            p_vocab_new = torch.diagonal(pointer_distrib_prob).t().unsqueeze(0)
+            pvocab[t] = p_vocab_new
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
@@ -331,8 +338,8 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     decoder.train()
     i = 0
     for batchData in data:
-        if i >=30:
-            break
+#        if i >=5:
+#            break
 #        vocab_ext = copy.deepcopy(vocab)
         if dataset_type == 'articles':
             real_index = batchData.src[0]
@@ -353,13 +360,11 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
             continue
 #        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
         out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask)
-        
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
-
         if i % 2 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
@@ -374,14 +379,15 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 print(display(label_hat[:,0], vocab),flush=True)
             print('real output',flush=True)
             print(display(y1[1:,0], vocab),flush=True)
-            
+            print('CUDA memory usage: ', torch.cuda.memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
+
 
 def validation(encoder, decoder, data):
     acc = []
 #    vocab_ext = copy.deepcopy(vocab)
     i = 0
     for batchData in data:
-        if i >= 10:
+        if i >= 2:
             break
         if dataset_type == 'articles':
             real_index = batchData.src[0]
@@ -416,7 +422,7 @@ else:
     decoder = BiDecoderRNN(1, hidden_size).to(device)
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
 dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
-criterion = nn.CrossEntropyLoss(reduction='none')
+criterion = nn.CrossEntropyLoss(reduction='none').cuda()
 
 #%%
 
