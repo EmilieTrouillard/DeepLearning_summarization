@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-#dataset_type = 'articles'
-dataset_type = 'dummy'
+dataset_type = 'articles'
+#dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -17,15 +17,12 @@ import copy
 import socket
 from torchtext.data import ReversibleField, BucketIterator
 import os
-import tracemalloc
-#import torch.cuda as cutorch
-tracemalloc.start()
 
 if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
-batch_size = 16 if dataset_type == 'articles' else 50  #Batch size
+batch_size = 2 if dataset_type == 'articles' else 50  #Batch size
 epochs = 1 #How many epochs we train
 attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
@@ -98,7 +95,7 @@ else:
     FIELD.build_vocab(split[0].src)
     vocab = copy.deepcopy(FIELD.vocab)
     
-    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.text), device=device)
+    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
@@ -442,6 +439,7 @@ except KeyboardInterrupt:
     if save_model:
         torch.save(encoder, PATH + '_encoder_articles_hpc')
         torch.save(decoder, PATH + '_decoder_articles_hpc')
+
 #except RuntimeError:
 #    print('error')
 #    print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
