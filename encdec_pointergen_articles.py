@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-dataset_type = 'articles'
-#dataset_type = 'dummy'
+#dataset_type = 'articles'
+dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -17,13 +17,15 @@ import copy
 import socket
 from torchtext.data import ReversibleField, BucketIterator
 import os
+import tracemalloc
 #import torch.cuda as cutorch
+tracemalloc.start()
 
 if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
-batch_size = 16 if dataset_type == 'articles' else 2  #Batch size
+batch_size = 16 if dataset_type == 'articles' else 50  #Batch size
 epochs = 1 #How many epochs we train
 attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
@@ -44,7 +46,7 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique_small_for_test.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
@@ -77,7 +79,7 @@ if dataset_type == 'dummy':
 
     #Data loader iterator
     dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=device,
-            train=True, shuffle=True, repeat=False, sort=False)
+            train=True, shuffle=False, repeat=False, sort=True, sort_key=lambda x: -len(x.data))
     
     dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=device,
             train=True, shuffle=True, repeat=False, sort=False)
@@ -96,7 +98,7 @@ else:
     FIELD.build_vocab(split[0].src)
     vocab = copy.deepcopy(FIELD.vocab)
     
-    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort_key=lambda x: len(x.text), device=device)
+    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.text), device=device)
 
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
@@ -254,7 +256,7 @@ class BiDecoderRNN(nn.Module):
             pointer_distrib = pointer_distrib.scatter_add_(0, real_index, attention.squeeze()).squeeze().t().reshape(1,batch_size*big_vocab_size).squeeze()
             pointer_distrib_prob = torch.ger(1-pgen.squeeze(0).squeeze(1), pointer_distrib).reshape(batch_size, batch_size, big_vocab_size)
             p_vocab_new = torch.diagonal(pointer_distrib_prob).t().unsqueeze(0)
-            pvocab[t] = p_vocab_new
+            pvocab[t] = p_vocab_new + p_vocab
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
@@ -379,7 +381,7 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 print(display(label_hat[:,0], vocab),flush=True)
             print('real output',flush=True)
             print(display(y1[1:,0], vocab),flush=True)
-            print('CUDA memory usage: ', torch.cuda.memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
+            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
 
 def validation(encoder, decoder, data):
@@ -430,6 +432,7 @@ try:
     for epoch in range(1, epochs + 1):
         batch_size=batch_size
         train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+        torch.cuda.empty_cache()
     batch_size=1
 #    acc = validation(encoder, decoder, dataset_iter_val)
     if save_model:
@@ -439,3 +442,6 @@ except KeyboardInterrupt:
     if save_model:
         torch.save(encoder, PATH + '_encoder_articles_hpc')
         torch.save(decoder, PATH + '_decoder_articles_hpc')
+#except RuntimeError:
+#    print('error')
+#    print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
