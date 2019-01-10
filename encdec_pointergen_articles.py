@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-dataset_type = 'articles'
-#dataset_type = 'dummy'
+#dataset_type = 'articles'
+dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -23,7 +23,7 @@ if dataset_type == 'articles':
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
 batch_size = 2 if dataset_type == 'articles' else 50  #Batch size
-epochs = 1 #How many epochs we train
+epochs = 10 #How many epochs we train
 attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.01
@@ -43,7 +43,7 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique_small_for_test.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
     PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
@@ -176,11 +176,10 @@ class BiDecoderRNN(nn.Module):
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
 #    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
-    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, first_word=True):
+    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_size, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
-        input_size = output_enc.size()[0]
         if first_word:
             old_enc = torch.cat((hidden_enc[0:2],hidden_enc[2:]),dim=-1)
             old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
@@ -257,7 +256,7 @@ class BiDecoderRNN(nn.Module):
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
-def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_size):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -270,16 +269,15 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask):
 
     :return: output (after log-softmax), loss, accuracy (per-symbol)
     """
-
+    x = x.detach()
     #Reinitialize the state to zero since we have a new sample now.
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=True)
     
     #Run encoder and get last hidden state (and output).
-
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
-    
+#    output_enc = torch.zeros(input_size, batch_size, 2*100, device=device)
 #    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
-    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask)
+    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_size)
     
     label_hat = torch.argmax(output, -1)
 
@@ -357,14 +355,15 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                                  torch.max(real_index, dim=0)[0].cuda())) != batch_size):
             print("unknown word in target summary",flush=True)
             continue
+        input_size = len(real_index)
 #        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask)
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_size)
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
-        if i % 2 == 0:
+        if i % 10 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
         if i % 40 == 0:
