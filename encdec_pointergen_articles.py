@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-#dataset_type = 'articles'
-dataset_type = 'dummy'
+dataset_type = 'articles'
+#dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -80,22 +80,22 @@ if dataset_type == 'dummy':
     
     dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=device,
             train=True, shuffle=True, repeat=False, sort=False)
-else:
-    
-    
-    FIELD = ReversibleField(batch_first=False, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
-    
-    split_cnn = CNN.splits(fields=FIELD)
-    split_dm = DailyMail.splits(fields=FIELD)
-    
-    for scnn, sdm in zip(split_cnn, split_dm):
-        scnn.examples.extend(sdm)
-    split = split_cnn
-    
-    FIELD.build_vocab(split[0].src)
-    vocab = copy.deepcopy(FIELD.vocab)
-    
-    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
+#else:
+#    
+#    
+#    FIELD = ReversibleField(batch_first=False, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
+#    
+#    split_cnn = CNN.splits(fields=FIELD)
+#    split_dm = DailyMail.splits(fields=FIELD)
+#    
+#    for scnn, sdm in zip(split_cnn, split_dm):
+#        scnn.examples.extend(sdm)
+#    split = split_cnn
+#    
+#    FIELD.build_vocab(split[0].src)
+#    vocab = copy.deepcopy(FIELD.vocab)
+#    
+#    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
@@ -124,6 +124,9 @@ def attention_mask(x):
 
 def display(x, vocab_ext):
     return ' '.join([vocab_ext.itos[i] for i in x if vocab_ext.itos[i] != '<pad>'])
+
+def isin(ar1, ar2):
+    return (ar1[..., None] == ar2).any(-1)
      
 #%%
 """
@@ -176,7 +179,7 @@ class BiDecoderRNN(nn.Module):
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
 #    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
-    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_size, first_word=True):
+    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
@@ -240,13 +243,7 @@ class BiDecoderRNN(nn.Module):
             #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size), device=device)), dim=2)
-#            for i in range(batch_size):
-#                for j in range(attention.size()[0]):
-#                    if real_index[j,i] == 1:
-#                        pass
-#                    else:
-#                        index = int(real_index[j,i])
-#                        p_vocab[0,i,index] = p_vocab[0,i,index] + attention[j,i,0]*(1-pgen[0,i,0])
+
             big_vocab_size = max(vocab_size, torch.max(real_index) + 1)
             pointer_distrib = torch.zeros(big_vocab_size, batch_size, device=device)
             pointer_distrib = pointer_distrib.scatter_add_(0, real_index, attention.squeeze()).squeeze().t().reshape(1,batch_size*big_vocab_size).squeeze()
@@ -256,7 +253,7 @@ class BiDecoderRNN(nn.Module):
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
-def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_size):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_length):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -271,22 +268,29 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, in
     """
     x = x.detach()
     #Reinitialize the state to zero since we have a new sample now.
-    (hidden_enc, cell_state_enc) = encoder.initHidden(train=True)
+    print('start forward ', torch.cuda.max_memory_allocated()/1000000)
     
+    (hidden_enc, cell_state_enc) = encoder.initHidden(train=True)
+    print('initHidden ', torch.cuda.max_memory_allocated()/1000000)
     #Run encoder and get last hidden state (and output).
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
-#    output_enc = torch.zeros(input_size, batch_size, 2*100, device=device)
+    print('encoder forward ', torch.cuda.max_memory_allocated()/1000000)
 #    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
-    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_size)
+    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_length)
+    print('decoder forward ', torch.cuda.max_memory_allocated()/1000000)
     
     label_hat = torch.argmax(output, -1)
-
+    print('label_hat', torch.cuda.max_memory_allocated()/1000000)
+    
     output = output.permute([1,2,0]).unsqueeze(3) #N,C,d format where C number of classes for the Cross Entropy 
     label_ = label[1:].long().permute([1,2,0]).squeeze().unsqueeze(2)
+    print('output and label_', torch.cuda.max_memory_allocated()/1000000)
     
     loss = criterion(output, label_)
+    print('criterion', torch.cuda.max_memory_allocated()/1000000)
     
     combined_loss = loss + torch.mul(cov_loss.permute([1,0,2]), LAMBDA_COVERAGE)
+    print('combined loss', torch.cuda.max_memory_allocated()/1000000)
 
     mask = label_mask(label).permute([1,0,2])
     loss_mask = torch.sum(combined_loss * mask, dim=1) 
@@ -335,8 +339,8 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     decoder.train()
     i = 0
     for batchData in data:
-#        if i >=5:
-#            break
+        if i >=2:
+            break
 #        vocab_ext = copy.deepcopy(vocab)
         if dataset_type == 'articles':
             real_index = batchData.src[0]
@@ -350,14 +354,26 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = y.float()
         x = embed(real_index)
         i += 1
-        if np.bool(sum(torch.max(y.long(), dim=0)[0].squeeze() <= 
-                       torch.max(torch.cuda.LongTensor([vocab_size-1]*batch_size), 
-                                 torch.max(real_index, dim=0)[0].cuda())) != batch_size):
-            print("unknown word in target summary",flush=True)
-            continue
-        input_size = len(real_index)
+        
+        input_length = len(real_index)
+        big_vocab_size = int(max(vocab_size, torch.max(real_index) + 1))
+#        if np.bool(sum(torch.max(y.long(), dim=0)[0].squeeze() <= 
+#                       torch.max(torch.cuda.LongTensor([vocab_size-1]*batch_size), 
+#                                 torch.max(real_index, dim=0)[0].cuda())) != batch_size):
+#            print("unknown word in target summary",flush=True)
+#            continue
+#        print(y.size())
+#        x_oov = x * (x >= vocab_size).float()
+#        mask = isin(y, x_oov.reshape(-1,1))
+#        print(mask.size())
+#        y = y * (mask + (y<big_vocab_size)).float()
+#        print(y.size())
+#        y = y.detach()
+#        print(y.size())
+        y = y * (y<big_vocab_size).float()
+
 #        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_size)
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_length)
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
@@ -373,10 +389,10 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
             try:
                 ind = np.where(y1[1:,0] == 1)[0][0]
                 print(display(label_hat[:ind,0], vocab),flush=True)
+                print('real output',flush=True)
+                print(display(y1[1:,0], vocab),flush=True)
             except:
-                print(display(label_hat[:,0], vocab),flush=True)
-            print('real output',flush=True)
-            print(display(y1[1:,0], vocab),flush=True)
+                print("Sorry, couldn't print it", flush=True)
             print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
 
