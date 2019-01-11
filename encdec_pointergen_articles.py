@@ -17,13 +17,14 @@ import copy
 import socket
 from torchtext.data import ReversibleField, BucketIterator
 import os
+import time
 
 if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
-batch_size = 2 if dataset_type == 'articles' else 50  #Batch size
-epochs = 10 #How many epochs we train
+batch_size = 16 if dataset_type == 'articles' else 50  #Batch size
+epochs = 1 #How many epochs we train
 attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.01
@@ -80,22 +81,22 @@ if dataset_type == 'dummy':
     
     dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=device,
             train=True, shuffle=True, repeat=False, sort=False)
-#else:
-#    
-#    
-#    FIELD = ReversibleField(batch_first=False, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
-#    
-#    split_cnn = CNN.splits(fields=FIELD)
-#    split_dm = DailyMail.splits(fields=FIELD)
-#    
-#    for scnn, sdm in zip(split_cnn, split_dm):
-#        scnn.examples.extend(sdm)
-#    split = split_cnn
-#    
-#    FIELD.build_vocab(split[0].src)
-#    vocab = copy.deepcopy(FIELD.vocab)
-#    
-#    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
+else:
+    
+    
+    FIELD = ReversibleField(batch_first=False, init_token='<init>', eos_token='<eos>', lower=True, include_lengths=True)
+    
+    split_cnn = CNN.splits(fields=FIELD)
+    split_dm = DailyMail.splits(fields=FIELD)
+    
+    for scnn, sdm in zip(split_cnn, split_dm):
+        scnn.examples.extend(sdm)
+    split = split_cnn
+    
+    FIELD.build_vocab(split[0].src)
+    vocab = copy.deepcopy(FIELD.vocab)
+    
+    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
@@ -179,10 +180,12 @@ class BiDecoderRNN(nn.Module):
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
 #    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
-    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, first_word=True):
+    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
+#        print('start forward', int(torch.cuda.memory_allocated()/1000000))
+#        t0 = time.time()
         if first_word:
             old_enc = torch.cat((hidden_enc[0:2],hidden_enc[2:]),dim=-1)
             old_cell = torch.cat((cell_state_enc[0:2],cell_state_enc[2:]),dim=-1)
@@ -193,7 +196,11 @@ class BiDecoderRNN(nn.Module):
             new_enc = hidden_enc
             new_cell = cell_state_enc
         output_dec, (hidden_dec, cell_state_dec) = self.lstm(input_dec, (new_enc, new_cell))
+#        print('lstm', int(torch.cuda.memory_allocated()/1000000))
         
+#        t1 = time.time()
+#        print('lstm', t1 - t0)
+#        t0 = t1
         
 #        pvocab = torch.zeros((len(output_dec), batch_size, vocab_size,int(torch.max(real_index)+1)))).cuda() 
         pvocab = torch.zeros(len(output_dec), batch_size, max(torch.max(real_index)+1, vocab_size), device=device)
@@ -202,9 +209,14 @@ class BiDecoderRNN(nn.Module):
         coverage_loss = torch.zeros(len(output_dec), batch_size, 1, device=device)
         
         pgen = torch.zeros(batch_size, 1, device=device)  
-
+#        print('init over ', int(torch.cuda.memory_allocated()/1000000))
+        
+#        t1 = time.time()
+#        print('init over', t1 - t0)
+#        t0 = t1
         #Attention
         #We loop over t in the equation
+#        t00 = time.time()
         for t in range(len(output_dec)):
             #Expand negates a loop over i
             #Output_dec contains all decoder states at times t=0, ... , t=N
@@ -214,16 +226,26 @@ class BiDecoderRNN(nn.Module):
             e = self.attn_out(e)
             e = e + att_mask
             attention = self.softmax(e)
-      
+            
+#            t1 = time.time()
+#            print('attention', t1 - t00)
+#            t0 = t1
+#            print('attention', int(torch.cuda.memory_allocated()/1000000))
+            
             coverage_loss[t] = torch.sum(torch.min(attention, coverage), dim=0)
             coverage = coverage + attention
-            
+#            print('coverage', int(torch.cuda.memory_allocated()/1000000))
+#            t1 = time.time()
+#            print('coverage', t1 - t0)
+#            t0 = t1
             #Calculate context vector sum(a_i^t * h_i)
             #This becomes a weighted sum of hidden states, hidden states created
             #after inputing a word with high attention has more weight
             context = torch.sum(attention * output_enc, dim=0).reshape((1,batch_size, 2*self.hidden_size))
-                     
-            
+#            print('context', int(torch.cuda.memory_allocated()/1000000))         
+#            t1 = time.time()
+#            print('context', t1 - t0)
+#            t0 = t1
             #Calculate pointer generation probability
             in_pgen = torch.cat((context, output_dec[t:t+1], input_dec[t:t+1]),dim=2)
             
@@ -231,7 +253,9 @@ class BiDecoderRNN(nn.Module):
             pgen = self.sigmoid(pgen)
             #pgen[t] = self.pgen_linear(in_pgen)
             #pgen[t] = self.sigmoid(pgen[t])
-            
+#            t1 = time.time()
+#            print('pgen', t1 - t0)
+#            t0 = t1
             
             #Calculate Pvocab (no softmax in training loop as it is included in cross entropy loss)
             p_vocab = torch.cat((output_dec[t:t+1],context),2)
@@ -240,20 +264,57 @@ class BiDecoderRNN(nn.Module):
             p_vocab = self.softmaxvocab(p_vocab)
             #Multiply pvocab with generation probability
             p_vocab = p_vocab * pgen
+#            t1 = time.time()
+#            print('p_vocab', t1 - t0)
+#            t0 = t1
+#            print('p_vocab', int(torch.cuda.memory_allocated()/1000000))
             #p_vocab is 1 x batch_size x vocab size
             if torch.max(real_index) >= vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size), device=device)), dim=2)
 
-            big_vocab_size = max(vocab_size, torch.max(real_index) + 1)
-            pointer_distrib = torch.zeros(big_vocab_size, batch_size, device=device)
-            pointer_distrib = pointer_distrib.scatter_add_(0, real_index, attention.squeeze()).squeeze().t().reshape(1,batch_size*big_vocab_size).squeeze()
-            pointer_distrib_prob = torch.ger(1-pgen.squeeze(0).squeeze(1), pointer_distrib).reshape(batch_size, batch_size, big_vocab_size)
-            p_vocab_new = torch.diagonal(pointer_distrib_prob).t().unsqueeze(0)
+            p_vocab_new = torch.zeros(big_vocab_size, batch_size, device=device)
+            
+#            print('initial memory: ', int(torch.cuda.memory_allocated()/1000000))
+#            t0 = time.time()
+#            pointer_distrib.scatter_add_(0, real_index, attention.squeeze())
+#            pointer_distrib_prob = torch.ger(1-pgen.squeeze(0).squeeze(1), pointer_distrib.squeeze().t().reshape(1,batch_size*big_vocab_size).squeeze()).reshape(batch_size, batch_size, big_vocab_size)
+#            p_vocab_new = torch.diagonal(pointer_distrib_prob).t().unsqueeze(0)
+#            t1 = time.time()
+#            print('old_p_vocab_new', t1 - t0)
+#            print('oldmemory: ', int(torch.cuda.memory_allocated()/1000000))
+#            t0 = time.time()
+            pgen.expand_as(attention)
+            attention = (1-pgen) * attention
+            p_vocab_new.scatter_add_(0, real_index, attention.squeeze())
+            p_vocab_new = p_vocab_new.reshape(1, batch_size, -1)
+#            pgen_expanded = pgen.squeeze(2).expand(big_vocab_size, batch_size)
+#            smaller_p_vocab_new = ((1 - pgen_expanded.reshape(-1)) * pointer_distrib.reshape(-1)).reshape(1, batch_size, big_vocab_size)
+#            t1 = time.time()
+#            print('smaller_p_vocab_new', t1 - t0)
+#            print('smallmemory: ', int(torch.cuda.memory_allocated()/1000000))
+#            print(pointer_distrib.size())
+#            print(p_vocab_new.size())
+#            print(p_vocab_new - pointer_distrib)
+#            print('p_vocab_new', int(torch.cuda.memory_allocated()/1000000))
+#            t1 = time.time()
+#            print('p_vocab_new', t1 - t0)
+#            t0 = t1
             pvocab[t] = p_vocab_new + p_vocab
+#            t1 = time.time()
+#            print('pvocab', t1 - t0)
+#            t0 = t1
+#            print('pvocab', int(torch.cuda.memory_allocated()/1000000))
+#        print('t', t)
+#        print('big_vocab_size', big_vocab_size)
+#        print('done', int(torch.cuda.memory_allocated()/1000000))
+#        
+#        t1 = time.time()
+#        print('done loop', t1 - t00)
+#        print('time per loop', (t1 - t00)/t)
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
-def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_length):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_length, big_vocab_size):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -268,37 +329,96 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, in
     """
     x = x.detach()
     #Reinitialize the state to zero since we have a new sample now.
-    print('start forward ', torch.cuda.max_memory_allocated()/1000000)
+#    print('start forward ', int(torch.cuda.memory_allocated()/1000000))
+#    t0 = time.time()
     
     (hidden_enc, cell_state_enc) = encoder.initHidden(train=True)
-    print('initHidden ', torch.cuda.max_memory_allocated()/1000000)
+#    print('initHidden ', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('initHidden ', t1 - t0)
+#    t0 = t1
+    
     #Run encoder and get last hidden state (and output).
     output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
-    print('encoder forward ', torch.cuda.max_memory_allocated()/1000000)
+#    print('encoder forward ', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('encoder_forward', t1 - t0)
+#    t0 = t1
+    
 #    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
-    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_length)
-    print('decoder forward ', torch.cuda.max_memory_allocated()/1000000)
+    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size)
+#    print('decoder forward ', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('decoder forward', t1 - t0)
+#    t0 = t1
     
     label_hat = torch.argmax(output, -1)
-    print('label_hat', torch.cuda.max_memory_allocated()/1000000)
+#    print('label_hat', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('label_hat', t1 - t0)
+#    t0 = t1
     
     output = output.permute([1,2,0]).unsqueeze(3) #N,C,d format where C number of classes for the Cross Entropy 
     label_ = label[1:].long().permute([1,2,0]).squeeze().unsqueeze(2)
-    print('output and label_', torch.cuda.max_memory_allocated()/1000000)
+#    print('output and label_', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('output and label_', t1 - t0)
+#    t0 = t1
     
     loss = criterion(output, label_)
-    print('criterion', torch.cuda.max_memory_allocated()/1000000)
+#    print('criterion', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('criterion', t1 - t0)
+#    t0 = t1
     
     combined_loss = loss + torch.mul(cov_loss.permute([1,0,2]), LAMBDA_COVERAGE)
-    print('combined loss', torch.cuda.max_memory_allocated()/1000000)
-
+#    print('combined loss', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('combined loss', t1 - t0)
+#    t0 = t1
+    
     mask = label_mask(label).permute([1,0,2])
+#    print('mask', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('mask', t1 - t0)
+#    t0 = t1
+    
     loss_mask = torch.sum(combined_loss * mask, dim=1) 
+#    print('loss mask', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('loss mask', t1 - t0)
+#    t0 = t1
+    
+    
     loss_batch = loss_mask / torch.sum(mask, dim=1)
+#    print('loss batch', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('loss batch', t1 - t0)
+#    t0 = t1
+    
     total_loss = torch.mean(loss_batch)
+#    print('total loss', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('total loss', t1 - t0)
+#    t0 = t1
+    
     loss_maskCE = torch.sum(loss * mask, dim=1) 
+#    print('loss mask CE', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('loss mask ce', t1 - t0)
+#    t0 = t1
+    
     loss_batchCE = loss_maskCE / torch.sum(mask, dim=1)
+#    print('loss batch CE', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('loss batch ce', t1 - t0)
+#    t0 = t1
+    
     total_lossCE = torch.mean(loss_batchCE)
+#    print('total loss CE', int(torch.cuda.memory_allocated()/1000000))
+#    t1 = time.time()
+#    print('total loss ce', t1 - t0)
+#    t0 = t1
     
     return output, total_lossCE, total_loss, label_hat
 
@@ -338,17 +458,17 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
     encoder.train()
     decoder.train()
     i = 0
+    t0 = time.time()
     for batchData in data:
-        if i >=2:
-            break
+#        if i >=10:
+#            break
 #        vocab_ext = copy.deepcopy(vocab)
         if dataset_type == 'articles':
-            real_index = batchData.src[0]
-            y1 = batchData.trg[0]
+            real_index = batchData.src[0][:TRUNC_LENGTH,:]
+            y1 = batchData.trg[0][:MAX_LENGTH]
         else:
-            real_index = batchData.data
-            y1 = batchData.label
-        real_index = real_index[:TRUNC_LENGTH,:]
+            real_index = batchData.data[:TRUNC_LENGTH,:]
+            y1 = batchData.label[:MAX_LENGTH]
         att_mask = attention_mask(real_index)
         y = torch.reshape(y1,(np.shape(y1)[0], np.shape(y1)[1], 1))
         y = y.float()
@@ -373,15 +493,22 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = y * (y<big_vocab_size).float()
 
 #        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_length)
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_length, big_vocab_size)
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
         enc_optimizer.step()
         dec_optimizer.step()
+#        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
         if i % 10 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
+                
+            t1 = time.time()
+            print('time: {:.4f}\t memory: {}\t inputlength: {}\tbigvocab: {}\toutputlength: {}'.format(
+                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000), input_length, big_vocab_size, len(y)), flush=True)
+            t0 = t1
+            
         if i % 40 == 0:
             #print('input')
             #print(display(real_index, vocab_ext))
@@ -393,7 +520,7 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 print(display(y1[1:,0], vocab),flush=True)
             except:
                 print("Sorry, couldn't print it", flush=True)
-            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
+#            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
 
 def validation(encoder, decoder, data):
