@@ -23,19 +23,19 @@ if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
-batch_size = 16 if dataset_type == 'articles' else 50  #Batch size
-epochs = 1 #How many epochs we train
-attention_features = 25 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
-vocab_features = 50 #The number of features we calculate when we calculate the vocab (abigail eq 4)
-LEARNING_RATE = 0.01
+BATCH_SIZE = 12 if dataset_type == 'articles' else 23  #Batch size
+epochs = 50 #How many epochs we train
+attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
+vocab_features = 100 #The number of features we calculate when we calculate the vocab (abigail eq 4)
+LEARNING_RATE = 0.001
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
 MAX_LENGTH = 100
-hidden_size = 100 #Hiddensize dimension (double the size for encoder, because bidirectional)
+hidden_size = 256 #Hiddensize dimension (double the size for encoder, because bidirectional)
 TRUNC_LENGTH = 400
 
-save_model = False
+save_model = True
 load_model = False
 
 
@@ -44,9 +44,9 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short_unique.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
-    PATH = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
+    PATH = '/work3/s172727/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
 device = torch.device("cuda:0")# if torch.cuda.is_available() else "cpu")
@@ -76,7 +76,7 @@ if dataset_type == 'dummy':
 #w = embed.weight.data.copy_(vocab.vectors)
 
     #Data loader iterator
-    dataset_iter = data.Iterator(train_set, batch_size=batch_size, device=device,
+    dataset_iter = data.Iterator(train_set, batch_size=BATCH_SIZE, device=device,
             train=True, shuffle=False, repeat=False, sort=True, sort_key=lambda x: -len(x.data))
     
     dataset_iter_val = data.Iterator(validation_set, batch_size=1, device=device,
@@ -96,7 +96,7 @@ else:
     FIELD.build_vocab(split[0].src)
     vocab = copy.deepcopy(FIELD.vocab)
     
-    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=batch_size, sort=True, sort_key=lambda x: -len(x.src), device=device)
+    dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=BATCH_SIZE, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
 """
@@ -143,11 +143,11 @@ class BiEncoderRNN(nn.Module):
                           bidirectional=True,num_layers=layers_enc)
 
                           
-    def forward(self, x, hidden, cell_state):
+    def forward(self, x, batch_size, hidden, cell_state):
         output_enc, (hidden_enc, cell_state_enc) = self.lstm(x, (hidden, cell_state))
         return output_enc, (hidden_enc, cell_state_enc)
 
-    def initHidden(self, train=True):
+    def initHidden(self, batch_size, train=True):
         #Initial state for the hidden state and cell state in the encoder
         #Size should be (num_directions*num_layers, batch_size, input_size)
         if train:
@@ -180,7 +180,7 @@ class BiDecoderRNN(nn.Module):
         self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
 
 #    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
-    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, first_word=True):
+    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, batch_size, first_word=True):
         #During training input_dec should be the label (sequence), during test it should the previous output (one word)
         #We reduce the forwards and backwards direction hidden states into
         #one, as our decoder is unidirectional.
@@ -269,8 +269,8 @@ class BiDecoderRNN(nn.Module):
 #            t0 = t1
 #            print('p_vocab', int(torch.cuda.memory_allocated()/1000000))
             #p_vocab is 1 x batch_size x vocab size
-            if torch.max(real_index) >= vocab_size:
-                p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,int(torch.max(real_index)+1-vocab_size), device=device)), dim=2)
+            if big_vocab_size > vocab_size:
+                p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,big_vocab_size-vocab_size, device=device)), dim=2)
 
             p_vocab_new = torch.zeros(big_vocab_size, batch_size, device=device)
             
@@ -314,7 +314,7 @@ class BiDecoderRNN(nn.Module):
         return pvocab, coverage_loss, coverage, (hidden_dec, cell_state_dec)
  #reduction='none' because we want one loss per element and then apply the mask
 #def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, vocab_ext):
-def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_length, big_vocab_size):
+def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, input_length, big_vocab_size, batch_size):
     """
     Executes a forward pass through the whole model.
     :param encoder:
@@ -327,26 +327,25 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, in
 
     :return: output (after log-softmax), loss, accuracy (per-symbol)
     """
-    x = x.detach()
     #Reinitialize the state to zero since we have a new sample now.
 #    print('start forward ', int(torch.cuda.memory_allocated()/1000000))
 #    t0 = time.time()
     
-    (hidden_enc, cell_state_enc) = encoder.initHidden(train=True)
+    (hidden_enc, cell_state_enc) = encoder.initHidden(batch_size, train=True)
 #    print('initHidden ', int(torch.cuda.memory_allocated()/1000000))
 #    t1 = time.time()
 #    print('initHidden ', t1 - t0)
 #    t0 = t1
     
     #Run encoder and get last hidden state (and output).
-    output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
+    output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, batch_size, hidden_enc, cell_state_enc)
 #    print('encoder forward ', int(torch.cuda.memory_allocated()/1000000))
 #    t1 = time.time()
 #    print('encoder_forward', t1 - t0)
 #    t0 = t1
     
 #    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, vocab_ext)
-    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size)
+    output, cov_loss, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label[:-1], hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, batch_size)
 #    print('decoder forward ', int(torch.cuda.memory_allocated()/1000000))
 #    t1 = time.time()
 #    print('decoder forward', t1 - t0)
@@ -474,9 +473,11 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = y.float()
         x = embed(real_index)
         i += 1
-        
+        x = x.detach()
+        y = y.detach()
         input_length = len(real_index)
         big_vocab_size = int(max(vocab_size, torch.max(real_index) + 1))
+        batch_size = y.size()[1]
 #        if np.bool(sum(torch.max(y.long(), dim=0)[0].squeeze() <= 
 #                       torch.max(torch.cuda.LongTensor([vocab_size-1]*batch_size), 
 #                                 torch.max(real_index, dim=0)[0].cuda())) != batch_size):
@@ -493,10 +494,12 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         y = y * (y<big_vocab_size).float()
 
 #        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, vocab_ext)
-        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_length, big_vocab_size)
+        out, crossEnt_loss, loss, label_hat = forward_pass(encoder, decoder, real_index, x, y, criterion, att_mask, input_length, big_vocab_size, batch_size)
         enc_optimizer.zero_grad()
         dec_optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(encoder.parameters(), 2)
+        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 2)
         enc_optimizer.step()
         dec_optimizer.step()
 #        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
@@ -505,8 +508,8 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
                 
             t1 = time.time()
-            print('time: {:.4f}\t memory: {}\t inputlength: {}\tbigvocab: {}\toutputlength: {}'.format(
-                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000), input_length, big_vocab_size, len(y)), flush=True)
+            print('time: {:.4f}\t memory: {}'.format(
+                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
             t0 = t1
             
         if i % 40 == 0:
@@ -519,7 +522,10 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 print('real output',flush=True)
                 print(display(y1[1:,0], vocab),flush=True)
             except:
-                print("Sorry, couldn't print it", flush=True)
+                print(display(label_hat[:,0], vocab),flush=True)
+                print('real output',flush=True)
+                print(display(y1[1:,0], vocab),flush=True)
+#                print("Sorry, couldn't print it", flush=True)
 #            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
 
@@ -561,22 +567,25 @@ if load_model:
 else:
     encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
     decoder = BiDecoderRNN(1, hidden_size).to(device)
+#enc_optimizer = optim.Adagrad(encoder.parameters(), lr=LEARNING_RATE, initial_accumulator_value=0.1)
+#dec_optimizer = optim.Adagrad(decoder.parameters(), lr=LEARNING_RATE, initial_accumulator_value=0.1)
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
 dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
+#enc_optimizer = optim.SGD(encoder.parameters(), lr=LEARNING_RATE)
+#dec_optimizer = optim.SGD(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none').cuda()
 
 #%%
 
 try:
     for epoch in range(1, epochs + 1):
-        batch_size=batch_size
         train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
         torch.cuda.empty_cache()
-    batch_size=1
+        
 #    acc = validation(encoder, decoder, dataset_iter_val)
-    if save_model:
-        torch.save(encoder, PATH + '_encoder_articles_hpc')
-        torch.save(decoder, PATH + '_decoder_articles_hpc')
+        if save_model:
+            torch.save(encoder, PATH + '_encoder_articles_hpc_epoch' + epoch)
+            torch.save(decoder, PATH + '_decoder_articles_hpc_epoch' + epoch)
 except KeyboardInterrupt:
     if save_model:
         torch.save(encoder, PATH + '_encoder_articles_hpc')
