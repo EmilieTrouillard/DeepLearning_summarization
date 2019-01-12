@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-dataset_type = 'articles'
-#dataset_type = 'dummy'
+#dataset_type = 'articles'
+dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -27,7 +27,7 @@ BATCH_SIZE = 12 if dataset_type == 'articles' else 23  #Batch size
 epochs = 50 #How many epochs we train
 attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 100 #The number of features we calculate when we calculate the vocab (abigail eq 4)
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 LAMBDA_COVERAGE = 2
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
@@ -35,7 +35,7 @@ MAX_LENGTH = 100
 hidden_size = 256 #Hiddensize dimension (double the size for encoder, because bidirectional)
 TRUNC_LENGTH = 400
 
-save_model = True
+save_model = False
 load_model = False
 
 
@@ -44,7 +44,7 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_short_unique.csv'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
     path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
     PATH = '/work3/s172727/DeepLearning_summarization/saved_network'
 glove_dim = 50
