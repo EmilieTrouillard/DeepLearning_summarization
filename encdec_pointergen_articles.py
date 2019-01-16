@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-#dataset_type = 'articles'
-dataset_type = 'dummy'
+dataset_type = 'articles'
+#dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -18,6 +18,7 @@ import socket
 from torchtext.data import ReversibleField, BucketIterator
 import os
 import time
+import matplotlib.pyplot as plt
 
 if dataset_type == 'articles':
     from cnn_dm_torchtext_master.summarization import CNN, DailyMail
@@ -28,7 +29,7 @@ epochs = 50 #How many epochs we train
 attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 100 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.0001
-LAMBDA_COVERAGE = 2
+LAMBDA_COVERAGE = 1
 layers_enc=2 #Num of layers in the encoder
 layers_dec=2 #Num of layers in the decoder
 MAX_LENGTH = 100
@@ -93,12 +94,21 @@ else:
         scnn.examples.extend(sdm)
     split = split_cnn
     
-    FIELD.build_vocab(split[0].src)
+    FIELD.build_vocab(split[0].src, vectors="glove.6B."+str(glove_dim)+"d")
     vocab = copy.deepcopy(FIELD.vocab)
     
     dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=BATCH_SIZE, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
+embed_glove = torch.nn.Embedding(vocab_size, glove_dim, sparse=True).to(device)
+glove_weights = vocab.vectors[:vocab_size].cuda()
+embed_oov = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+embed_oov.weight.data *=torch.cat(((torch.sum(embed_glove.weight.data,1) ==0).unsqueeze(1).expand_as(embed_glove.weight.data).float(), torch.ones(len(vocab) - vocab_size, glove_dim, device=device)))
+
+
 embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+embed.weight.data = torch.cat((embed_glove.weight.data, torch.zeros(len(vocab) - vocab_size, glove_dim, device=device))) + embed_oov.weight.data
+embed.weight.requires_grad = False
+
 """
 Mask functions
 """
@@ -177,7 +187,7 @@ class BiDecoderRNN(nn.Module):
         self.linearVocab1 = nn.Linear(2*hidden_size+hidden_size,vocab_features, bias=True) 
         self.linearVocab2 = nn.Linear(vocab_features, vocab_size, bias=True) 
         self.sigmoid = nn.Sigmoid()
-        self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + 1, 1, bias=True)
+        self.pgen_linear = nn.Linear(2*hidden_size + hidden_size + glove_dim, 1, bias=True)
 
 #    def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True):
     def forward(self, output_enc, real_index, coverage, input_dec, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, batch_size, first_word=True):
@@ -247,7 +257,7 @@ class BiDecoderRNN(nn.Module):
 #            print('context', t1 - t0)
 #            t0 = t1
             #Calculate pointer generation probability
-            in_pgen = torch.cat((context, output_dec[t:t+1], input_dec[t:t+1]),dim=2)
+            in_pgen = torch.cat((context, output_dec[t:t+1], embed(input_dec[t:t+1].long()).squeeze(2)),dim=2)
             
             pgen = self.pgen_linear(in_pgen)
             pgen = self.sigmoid(pgen)
@@ -283,8 +293,9 @@ class BiDecoderRNN(nn.Module):
 #            print('old_p_vocab_new', t1 - t0)
 #            print('oldmemory: ', int(torch.cuda.memory_allocated()/1000000))
 #            t0 = time.time()
+#            print(torch.min(pgen))
             pgen.expand_as(attention)
-            attention = (1-pgen) * attention
+            attention = (1 -pgen) * attention
             p_vocab_new.scatter_add_(0, real_index, attention.squeeze())
             p_vocab_new = p_vocab_new.reshape(1, batch_size, -1)
 #            pgen_expanded = pgen.squeeze(2).expand(big_vocab_size, batch_size)
@@ -453,6 +464,7 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask):
 
 
 #%%
+#def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch, train_loss):
 def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch):
     encoder.train()
     decoder.train()
@@ -503,7 +515,7 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         enc_optimizer.step()
         dec_optimizer.step()
 #        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
-        if i % 10 == 0:
+        if i % 20 == 0:
             print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
                 epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
                 
@@ -511,8 +523,9 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
             print('time: {:.4f}\t memory: {}'.format(
                     t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
             t0 = t1
+#            train_loss.append(float(loss.item()))
             
-        if i % 40 == 0:
+        if i % 60 == 0:
             #print('input')
             #print(display(real_index, vocab_ext))
             print('output',flush=True)
@@ -525,6 +538,10 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
                 print(display(label_hat[:,0], vocab),flush=True)
                 print('real output',flush=True)
                 print(display(y1[1:,0], vocab),flush=True)
+#            fig = plt.figure(figsize=(10,4))
+#            plt.plot(range(len(train_loss)), train_loss, label='train_loss')
+#            plt.legend()
+#            plt.show()
 #                print("Sorry, couldn't print it", flush=True)
 #            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
@@ -576,9 +593,10 @@ dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none').cuda()
 
 #%%
-
+#train_loss=[]
 try:
     for epoch in range(1, epochs + 1):
+#        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch, train_loss)
         train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
         torch.cuda.empty_cache()
         
