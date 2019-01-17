@@ -516,13 +516,13 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         dec_optimizer.step()
 #        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
         if i % 20 == 0:
-#            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
-#                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
-#                
-#            t1 = time.time()
-#            print('time: {:.4f}\t memory: {}'.format(
-#                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
-#            t0 = t1
+            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
+                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
+                
+            t1 = time.time()
+            print('time: {:.4f}\t memory: {}'.format(
+                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
+            t0 = t1
 #            train_loss.append(float(loss.item()))
             
         if i % 60 == 0:
