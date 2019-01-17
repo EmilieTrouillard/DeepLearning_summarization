@@ -5,8 +5,8 @@ Created on Mon Nov 12 15:27:39 2018
 
 @author: jacob
 """
-dataset_type = 'articles'
-#dataset_type = 'dummy'
+#dataset_type = 'articles'
+dataset_type = 'dummy'
 
 from torchtext import data
 import torch
@@ -36,7 +36,7 @@ MAX_LENGTH = 100
 hidden_size = 256 #Hiddensize dimension (double the size for encoder, because bidirectional)
 TRUNC_LENGTH = 400
 
-save_model = True
+save_model = False
 load_model = False
 
 
@@ -148,16 +148,11 @@ class BiEncoderRNN(nn.Module):
         output_enc, (hidden_enc, cell_state_enc) = self.lstm(x, (hidden, cell_state))
         return output_enc, (hidden_enc, cell_state_enc)
 
-    def initHidden(self, batch_size, train=True):
+    def initHidden(self, batch_size):
         #Initial state for the hidden state and cell state in the encoder
         #Size should be (num_directions*num_layers, batch_size, input_size)
-        if train:
-            return (torch.zeros(2*layers_enc, batch_size, self.hidden_size, device=device), #h0
-                    torch.zeros(2*layers_enc, batch_size, self.hidden_size, device=device)) #c0
-        else:
-            return (torch.zeros(2*layers_enc, 1, self.hidden_size, device=device), #h0
-                    torch.zeros(2*layers_enc, 1, self.hidden_size, device=device)) #c0
-
+        return (torch.zeros(2*layers_enc, batch_size, self.hidden_size, device=device), #h0
+                torch.zeros(2*layers_enc, batch_size, self.hidden_size, device=device)) #c0
 
 
 class BiDecoderRNN(nn.Module):
@@ -295,7 +290,12 @@ class BiDecoderRNN(nn.Module):
 #            print(torch.min(pgen))
             pgen.expand_as(attention)
             attention = (1 -pgen) * attention
-            p_vocab_new.scatter_add_(0, real_index, attention.squeeze())
+#            print('attention', attention.size()),
+#            print('real index', real_index.size())
+#            print('p vocab', p_vocab_new.size())
+#            print('max real_index', torch.max(real_index))
+    
+            p_vocab_new.scatter_add_(0, real_index, attention.squeeze(2))
             p_vocab_new = p_vocab_new.t().unsqueeze(0)
 #            pgen_expanded = pgen.squeeze(2).expand(big_vocab_size, batch_size)
 #            smaller_p_vocab_new = ((1 - pgen_expanded.reshape(-1)) * pointer_distrib.reshape(-1)).reshape(1, batch_size, big_vocab_size)
@@ -342,7 +342,7 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, in
 #    print('start forward ', int(torch.cuda.memory_allocated()/1000000))
 #    t0 = time.time()
     
-    (hidden_enc, cell_state_enc) = encoder.initHidden(batch_size, train=True)
+    (hidden_enc, cell_state_enc) = encoder.initHidden(batch_size)
 #    print('initHidden ', int(torch.cuda.memory_allocated()/1000000))
 #    t1 = time.time()
 #    print('initHidden ', t1 - t0)
@@ -434,19 +434,20 @@ def forward_pass(encoder, decoder, real_index, x, label, criterion, att_mask, in
 
         
 #def forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext):
-def forward_pass_val(encoder, decoder, real_index, x, att_mask):
+def forward_pass_val(encoder, decoder, real_index, x, att_mask, input_length, big_vocab_size, batch_size):
     #Reinitialize the state to zero since we have a new sample now.
-    (hidden_enc, cell_state_enc) = encoder.initHidden(train=False)
+    (hidden_enc, cell_state_enc) = encoder.initHidden(batch_size)
+#    print(batch_size)
     
     #Run encoder and get last hidden state (and output).
 
-    output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, hidden_enc, cell_state_enc)
+    output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, batch_size, hidden_enc, cell_state_enc)
     EOS = False
     label_hat = torch.zeros(1,1,1, device=device)
     label_hat[:] = 2
     out = []
 #    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True)
-    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, first_word=True)
+    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, batch_size, first_word=True)
     index = torch.argmax(output, -1)
     label_hat[:] = index
     if label_hat == 3:
@@ -454,7 +455,7 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask):
     out.append(index)
     while not EOS and len(out) < MAX_LENGTH:
 #        output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, vocab_ext, first_word=False)
-        output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, first_word=False)
+        output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverage, label_hat, hidden_dec, cell_state_dec, att_mask, input_length, big_vocab_size, batch_size, first_word=False)
         index = torch.argmax(output, -1)
         label_hat[:] = index
         if label_hat == 3:
@@ -464,8 +465,88 @@ def forward_pass_val(encoder, decoder, real_index, x, att_mask):
 
 
 #%%
-#def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch, train_loss):
-def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch):
+def beam_search(k, encoder, decoder, real_index, x, att_mask, input_length, big_vocab_size, batch_size):
+    iterations = 1
+    #Reinitialize the state to zero since we have a new sample now.
+    (hidden_enc, cell_state_enc) = encoder.initHidden(batch_size)
+    #Run encoder and get last hidden state (and output).
+    output_enc, (hidden_enc, cell_state_enc)=encoder.forward(x, batch_size, hidden_enc, cell_state_enc)
+    EOS = False
+    label_hat = torch.zeros(1,1,1, device=device)
+    label_hat[:] = 2
+    out = []
+#    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, vocab_ext, first_word=True)
+    output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, None, label_hat, hidden_enc, cell_state_enc, att_mask, input_length, big_vocab_size, batch_size, first_word=True)
+    probabilities, indices = torch.topk(output, k, dim=-1)
+    indices = indices.squeeze().squeeze()
+    probabilities = probabilities.squeeze().squeeze()
+#    print(indices)
+#    print(list(indices[0][0]))
+    sequences = [[int(i)] for i in indices]
+    coverages = [coverage] * k
+    hidden_decs = [hidden_dec] * k
+    cell_state_decs = [cell_state_dec] * k
+    one_more_step = True
+    while one_more_step and iterations < MAX_LENGTH:
+        sequences, probabilities, coverages, hidden_decs, cell_state_decs, one_more_step = beam_search_iteration(k, sequences, probabilities,
+                                                                                                                 decoder, coverages, hidden_decs,
+                                                                                                                 cell_state_decs, output_enc,
+                                                                                                                 real_index, att_mask, input_length,
+                                                                                                                 big_vocab_size, batch_size)
+        iterations += 1
+    highest_prob, idx = torch.max(probabilities, 0)
+    out = sequences[idx]
+#    print(sequences)
+    return torch.LongTensor(out).unsqueeze(1).unsqueeze(1)
+    
+
+def beam_search_iteration(k, sequences, probabilities, decoder, coverages,
+                          hidden_decs, cell_state_decs, output_enc, real_index, att_mask,
+                          input_length, big_vocab_size, batch_size):
+    new_sequences = []
+    new_probabilities = []
+    new_coverages = []
+    new_hidden_decs = []
+    new_cell_state_decs = []
+    label_hat = torch.zeros(1,1,1, device=device)
+    one_more_step = False
+    for i, seq in enumerate(sequences):
+        label_hat[:] = seq[-1]
+        probability = probabilities[i]
+#        print(seq[-1])
+        if seq[-1] == 3:
+            new_sequences.append(seq)
+            new_probabilities.append(probability)
+            new_hidden_decs.append(hidden_decs[i])
+            new_coverages.append(coverages[i])
+            new_cell_state_decs.append(cell_state_decs[i])
+        else:
+            one_more_step = True
+            output, _, coverage, (hidden_dec, cell_state_dec) = decoder.forward(output_enc, real_index, coverages[i], label_hat, hidden_decs[i], 
+                                 cell_state_decs[i], att_mask, input_length, big_vocab_size, batch_size, first_word=False)
+            values, indices = torch.topk(output, k, dim=-1)
+            indices = indices.squeeze().squeeze()
+            values = values.squeeze().squeeze()
+            
+            for j in range(k):
+#                seq.append(int(indices[j]))
+#                print(seq)
+                new_sequences.append(seq + [int(indices[j])])
+#                print(new_sequences)
+                new_probabilities.append(probability*values[j])
+                new_hidden_decs.append(hidden_dec)
+                new_coverages.append(coverage)
+                new_cell_state_decs.append(cell_state_dec)
+    new_probabilities = torch.stack(tuple(new_probabilities))
+    top_probabilities, ind = torch.topk(new_probabilities, k)
+    top_sequences = [new_sequences[i] for i in ind]
+    top_coverages = [new_coverages[i] for i in ind]
+    top_hidden_decs = [new_hidden_decs[i] for i in ind]
+    top_cell_state_decs = [new_cell_state_decs[i] for i in ind]
+    return top_sequences, top_probabilities, top_coverages, top_hidden_decs, top_cell_state_decs, one_more_step
+#%%
+def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch, train_loss):
+#def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch):
     encoder.train()
     decoder.train()
     i = 0
@@ -516,84 +597,83 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         dec_optimizer.step()
 #        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
         if i % 20 == 0:
-            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
-                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
-                
-            t1 = time.time()
-            print('time: {:.4f}\t memory: {}'.format(
-                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
-            t0 = t1
-#            train_loss.append(float(loss.item()))
-            
-        if i % 60 == 0:
-            #print('input')
-            #print(display(real_index, vocab_ext))
-            print('output',flush=True)
-            try:
-                ind = np.where(y1[1:,0] == 1)[0][0]
-                print(display(label_hat[:ind,0], vocab),flush=True)
-                print('real output',flush=True)
-                print(display(y1[1:,0], vocab),flush=True)
-            except:
-                print(display(label_hat[:,0], vocab),flush=True)
-                print('real output',flush=True)
-                print(display(y1[1:,0], vocab),flush=True)
-#            fig = plt.figure(figsize=(10,4))
-#            plt.plot(range(len(train_loss)), train_loss, label='train_loss')
-#            plt.legend()
-#            plt.show()
+#            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
+#                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
+#                
+#            t1 = time.time()
+#            print('time: {:.4f}\t memory: {}'.format(
+#                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
+#            t0 = t1
+            train_loss.append(float(loss.item()))
+#            
+#        if i % 60 == 0:
+#            #print('input')
+#            #print(display(real_index, vocab_ext))
+#            print('output',flush=True)
+#            try:
+#                ind = np.where(y1[1:,0] == 1)[0][0]
+#                print(display(label_hat[:ind,0], vocab),flush=True)
+#                print('real output',flush=True)
+#                print(display(y1[1:,0], vocab),flush=True)
+#            except:
+#                print(display(label_hat[:,0], vocab),flush=True)
+#                print('real output',flush=True)
+#                print(display(y1[1:,0], vocab),flush=True)
+#            
 #                print("Sorry, couldn't print it", flush=True)
 #            print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
 
 
 def validation(encoder, decoder, data):
-    acc = []
     encoder.eval()
     decoder.eval()
 #    vocab_ext = copy.deepcopy(vocab)
     i = 0
     for batchData in data:
-        if i >= 2:
-            break
         if dataset_type == 'articles':
-            real_index = batchData.src[0]
-            y = batchData.trg[0]
+            real_index = batchData.src[0][:TRUNC_LENGTH,:]
+            y1 = batchData.trg[0][:MAX_LENGTH]
         else:
-            real_index = batchData.data
-            y = batchData.label
-        real_index = real_index[:TRUNC_LENGTH,:]
-        att_mask = torch.zeros(real_index.size()[0], real_index.size()[1], 1, device=device)
-        y = torch.reshape(y,(np.shape(y)[0], np.shape(y)[1], 1))
-        y = y.long()
+            real_index = batchData.data[:TRUNC_LENGTH,:]
+            y1 = batchData.label[:MAX_LENGTH]
+        att_mask = attention_mask(real_index)
+        y = torch.reshape(y1,(np.shape(y1)[0], np.shape(y1)[1], 1))
+        y = y.float()
         x = embed(real_index)
-#        test_output = forward_pass_val(encoder, decoder, real_index, x, att_mask, vocab_ext)
-        test_output = forward_pass_val(encoder, decoder, real_index, x, att_mask)
-#        test_output = test_output.cuda()
         i += 1
-        if len(test_output) == len(y[1:]):
-            if len(test_output) == sum(test_output == y[1:]):
-                acc.append(1)
-            else:
-                acc.append(0)
-        else:
-            acc.append(0)
-    return acc
+        x = x.detach()
+        y = y.detach()
+        input_length = len(real_index)
+        big_vocab_size = int(max(vocab_size, torch.max(real_index) + 1))
+        batch_size = y.size()[1]
+
+        y = y * (y<big_vocab_size).float()
+        label_hat_greedy = forward_pass_val(encoder, decoder, real_index, x, att_mask, input_length, big_vocab_size, batch_size)
+        label_hat_beam = beam_search(3, encoder, decoder, real_index, x, att_mask, input_length, big_vocab_size, batch_size)
+#        print(label_hat_beam)
+        print('output_greedy', flush=True)
+        print(display(label_hat_greedy[:,0], vocab),flush=True)
+        print('output_beam',flush=True)
+        print(display(label_hat_beam[:,0], vocab),flush=True)
+        print('real output',flush=True)
+        print(display(y1[1:,0], vocab),flush=True)
+        break
 
 #%% Training op
 if load_model:
     encoder = torch.load(PATH + '_encoder')
     decoder = torch.load(PATH + '_decoder')
     embed = torch.load(PATH + '_embed')
-else:
-    embed_glove = torch.nn.Embedding(vocab_size, glove_dim, sparse=True).to(device)
-    glove_weights = vocab.vectors[:vocab_size].cuda()
-    embed_oov = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
-    embed_oov.weight.data *=torch.cat(((torch.sum(embed_glove.weight.data,1) ==0).unsqueeze(1).expand_as(embed_glove.weight.data).float(), torch.ones(len(vocab) - vocab_size, glove_dim, device=device)))    
-    embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
-    embed.weight.data = torch.cat((embed_glove.weight.data, torch.zeros(len(vocab) - vocab_size, glove_dim, device=device))) + embed_oov.weight.data
-    embed.weight.requires_grad = False
-    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
-    decoder = BiDecoderRNN(1, hidden_size).to(device)
+#else:
+#    embed_glove = torch.nn.Embedding(vocab_size, glove_dim, sparse=True).to(device)
+#    glove_weights = vocab.vectors[:vocab_size].cuda()
+#    embed_oov = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+#    embed_oov.weight.data *=torch.cat(((torch.sum(embed_glove.weight.data,1) ==0).unsqueeze(1).expand_as(embed_glove.weight.data).float(), torch.ones(len(vocab) - vocab_size, glove_dim, device=device)))    
+#    embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+#    embed.weight.data = torch.cat((embed_glove.weight.data, torch.zeros(len(vocab) - vocab_size, glove_dim, device=device))) + embed_oov.weight.data
+#    embed.weight.requires_grad = False
+#    encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
+#    decoder = BiDecoderRNN(1, hidden_size).to(device)
 #enc_optimizer = optim.Adagrad(encoder.parameters(), lr=LEARNING_RATE, initial_accumulator_value=0.1)
 #dec_optimizer = optim.Adagrad(decoder.parameters(), lr=LEARNING_RATE, initial_accumulator_value=0.1)
 enc_optimizer = optim.RMSprop(encoder.parameters(), lr=LEARNING_RATE)
@@ -603,13 +683,19 @@ dec_optimizer = optim.RMSprop(decoder.parameters(), lr=LEARNING_RATE)
 criterion = nn.CrossEntropyLoss(reduction='none').cuda()
 
 #%%
-#train_loss=[]
+train_loss=[]
+epochs = 5
 try:
     for epoch in range(1, epochs + 1):
 #        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch, train_loss)
-        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+#        train(encoder, decoder, dataset_iter, criterion, enc_optimizer, dec_optimizer, epoch)
+#        print('EPOCH ' + str(epoch))
+#        fig = plt.figure(figsize=(10,4))
+#        plt.plot(range(len(train_loss)), train_loss, label='train_loss')
+#        plt.legend()
+#        plt.show()
         torch.cuda.empty_cache()
-        
+        validation(encoder, decoder, dataset_iter_val)
 #    acc = validation(encoder, decoder, dataset_iter_val)
         if save_model:
             torch.save(encoder, PATH + '_encoder')
