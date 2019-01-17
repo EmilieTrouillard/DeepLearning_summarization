@@ -25,7 +25,7 @@ if dataset_type == 'articles':
 
 vocab_size = 50000 if dataset_type == 'articles' else 40 #Size of the vocab
 BATCH_SIZE = 12 if dataset_type == 'articles' else 23  #Batch size
-epochs = 50 #How many epochs we train
+epochs = 100 #How many epochs we train
 attention_features = 100 #The number of features we calculate in the attention (Row amount of Wh, abigail eq 1)
 vocab_features = 100 #The number of features we calculate when we calculate the vocab (abigail eq 4)
 LEARNING_RATE = 0.0001
@@ -36,7 +36,7 @@ MAX_LENGTH = 100
 hidden_size = 256 #Hiddensize dimension (double the size for encoder, because bidirectional)
 TRUNC_LENGTH = 400
 
-save_model = False
+save_model = True
 load_model = False
 
 
@@ -45,9 +45,9 @@ if socket.gethostname() == 'jacob':
     path_val = '/home/jacob/Desktop/DeepLearning_summarization/Data/validation_medium_unique.csv'
     PATH = '/home/jacob/Desktop/DeepLearning_summarization/'
 else:
-    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique.csv'
-    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique.csv'
-    PATH = '/work3/s172727/DeepLearning_summarization/saved_network'
+    path = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/train_medium_unique_countries.csv'
+    path_val = '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/SampleData/validation_medium_unique_countries.csv'
+    PATH = '/work3/s172727/DeepLearning_summarization/saved_network' if dataset_type == 'articles' else '/media/ubuntu/1TO/DTU/courses/DeepLearning/DeepLearning_summarization/saved_network'
 glove_dim = 50
 
 device = torch.device("cuda:0")# if torch.cuda.is_available() else "cpu")
@@ -99,15 +99,6 @@ else:
     
     dataset_iter, dataset_iter_val, dataset_iter_test = BucketIterator.splits(split, batch_size=BATCH_SIZE, sort=True, sort_key=lambda x: -len(x.src), device=device)
 
-embed_glove = torch.nn.Embedding(vocab_size, glove_dim, sparse=True).to(device)
-glove_weights = vocab.vectors[:vocab_size].cuda()
-embed_oov = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
-embed_oov.weight.data *=torch.cat(((torch.sum(embed_glove.weight.data,1) ==0).unsqueeze(1).expand_as(embed_glove.weight.data).float(), torch.ones(len(vocab) - vocab_size, glove_dim, device=device)))
-
-
-embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
-embed.weight.data = torch.cat((embed_glove.weight.data, torch.zeros(len(vocab) - vocab_size, glove_dim, device=device))) + embed_oov.weight.data
-embed.weight.requires_grad = False
 
 """
 Mask functions
@@ -261,6 +252,9 @@ class BiDecoderRNN(nn.Module):
             
             pgen = self.pgen_linear(in_pgen)
             pgen = self.sigmoid(pgen)
+            
+#            print('min', torch.min(pgen))
+#            print('max', torch.max(pgen))
             #pgen[t] = self.pgen_linear(in_pgen)
             #pgen[t] = self.sigmoid(pgen[t])
 #            t1 = time.time()
@@ -281,7 +275,12 @@ class BiDecoderRNN(nn.Module):
             #p_vocab is 1 x batch_size x vocab size
             if big_vocab_size > vocab_size:
                 p_vocab = torch.cat((p_vocab, torch.zeros(1,batch_size,big_vocab_size-vocab_size, device=device)), dim=2)
-
+#            old_loop = True
+#            print('attention', attention.size())
+#            print('real_index', real_index.size())
+#            print('p_vocab_old', p_vocab_old.size())
+#            print('pgen', pgen.size())
+            
             p_vocab_new = torch.zeros(big_vocab_size, batch_size, device=device)
             
 #            print('initial memory: ', int(torch.cuda.memory_allocated()/1000000))
@@ -297,7 +296,7 @@ class BiDecoderRNN(nn.Module):
             pgen.expand_as(attention)
             attention = (1 -pgen) * attention
             p_vocab_new.scatter_add_(0, real_index, attention.squeeze())
-            p_vocab_new = p_vocab_new.reshape(1, batch_size, -1)
+            p_vocab_new = p_vocab_new.t().unsqueeze(0)
 #            pgen_expanded = pgen.squeeze(2).expand(big_vocab_size, batch_size)
 #            smaller_p_vocab_new = ((1 - pgen_expanded.reshape(-1)) * pointer_distrib.reshape(-1)).reshape(1, batch_size, big_vocab_size)
 #            t1 = time.time()
@@ -310,6 +309,7 @@ class BiDecoderRNN(nn.Module):
 #            t1 = time.time()
 #            print('p_vocab_new', t1 - t0)
 #            t0 = t1
+#                print('new', p_vocab_new + p_vocab)
             pvocab[t] = p_vocab_new + p_vocab
 #            t1 = time.time()
 #            print('pvocab', t1 - t0)
@@ -516,13 +516,13 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
         dec_optimizer.step()
 #        print('CUDA memory usage: ', torch.cuda.max_memory_allocated(), ' out of ', torch.cuda.get_device_properties(0).total_memory, flush=True)
         if i % 20 == 0:
-            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
-                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
-                
-            t1 = time.time()
-            print('time: {:.4f}\t memory: {}'.format(
-                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
-            t0 = t1
+#            print('Epoch {} [Batch {}]\tTraining loss: {:.4f} \tCoverage-CE ratio: :{:.4f}'.format(
+#                epoch, i, loss.item(), (loss.item() - crossEnt_loss)/crossEnt_loss),flush=True)
+#                
+#            t1 = time.time()
+#            print('time: {:.4f}\t memory: {}'.format(
+#                    t1 - t0, int(torch.cuda.max_memory_allocated()/1000000)), flush=True)
+#            t0 = t1
 #            train_loss.append(float(loss.item()))
             
         if i % 60 == 0:
@@ -548,6 +548,8 @@ def train(encoder, decoder, data, criterion, enc_optimizer, dec_optimizer, epoch
 
 def validation(encoder, decoder, data):
     acc = []
+    encoder.eval()
+    decoder.eval()
 #    vocab_ext = copy.deepcopy(vocab)
     i = 0
     for batchData in data:
@@ -579,9 +581,17 @@ def validation(encoder, decoder, data):
 
 #%% Training op
 if load_model:
-    encoder = torch.load(PATH + '_encoder_articles2')
-    decoder = torch.load(PATH + '_decoder_articles2')
+    encoder = torch.load(PATH + '_encoder')
+    decoder = torch.load(PATH + '_decoder')
+    embed = torch.load(PATH + '_embed')
 else:
+    embed_glove = torch.nn.Embedding(vocab_size, glove_dim, sparse=True).to(device)
+    glove_weights = vocab.vectors[:vocab_size].cuda()
+    embed_oov = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+    embed_oov.weight.data *=torch.cat(((torch.sum(embed_glove.weight.data,1) ==0).unsqueeze(1).expand_as(embed_glove.weight.data).float(), torch.ones(len(vocab) - vocab_size, glove_dim, device=device)))    
+    embed = torch.nn.Embedding(len(vocab), glove_dim, sparse=True).to(device)
+    embed.weight.data = torch.cat((embed_glove.weight.data, torch.zeros(len(vocab) - vocab_size, glove_dim, device=device))) + embed_oov.weight.data
+    embed.weight.requires_grad = False
     encoder = BiEncoderRNN(glove_dim, hidden_size).to(device)
     decoder = BiDecoderRNN(1, hidden_size).to(device)
 #enc_optimizer = optim.Adagrad(encoder.parameters(), lr=LEARNING_RATE, initial_accumulator_value=0.1)
@@ -602,12 +612,14 @@ try:
         
 #    acc = validation(encoder, decoder, dataset_iter_val)
         if save_model:
-            torch.save(encoder, PATH + '_encoder_articles_hpc_epoch' + epoch)
-            torch.save(decoder, PATH + '_decoder_articles_hpc_epoch' + epoch)
+            torch.save(encoder, PATH + '_encoder')
+            torch.save(decoder, PATH + '_decoder')
+            torch.save(embed, PATH + '_embed')
 except KeyboardInterrupt:
     if save_model:
-        torch.save(encoder, PATH + '_encoder_articles_hpc')
-        torch.save(decoder, PATH + '_decoder_articles_hpc')
+        torch.save(encoder, PATH + '_encoder')
+        torch.save(decoder, PATH + '_decoder')
+        torch.save(embed, PATH + '_embed')
 
 #except RuntimeError:
 #    print('error')
